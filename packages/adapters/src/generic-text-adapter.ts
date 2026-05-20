@@ -4,6 +4,13 @@ import {
   GenericFallbackResult
 } from "./results.js";
 import { AdapterCapability, type AdapterContext, type IAdapter } from "./types.js";
+import {
+  fileName,
+  filesMatching,
+  fileTextIncludes,
+  inferFoldersBySegment,
+  pathSegments
+} from "./utils.js";
 
 export class GenericTextAdapter implements IAdapter {
   readonly name = "generic-text";
@@ -44,15 +51,33 @@ export class GenericTextAdapter implements IAdapter {
       fallbackReason:
         "No specialized adapter matched; using universal text indexing and custom command support.",
       score: new AdapterScore({
-        value: 0.2,
+        value: context.files.length > 0 ? 0.3 : 0.2,
         reasons: ["Generic fallback is always available."]
       }),
-      sourceFolders: inferFolders(context, ["src", "lib", "app", "packages"]),
-      testFolders: inferFolders(context, ["test", "tests", "__tests__", "spec"]),
+      sourceFolders: inferFoldersBySegment(context, [
+        "src",
+        "lib",
+        "app",
+        "packages",
+        "cmd"
+      ]),
+      testFolders: inferFoldersBySegment(context, [
+        "test",
+        "tests",
+        "__tests__",
+        "spec",
+        "e2e"
+      ]),
       configFiles: context.files
         .map((file) => file.path)
         .filter((filePath) => isLikelyConfigFile(filePath)),
-      architecturalPatterns: ["generic-text-indexing"],
+      featurePatterns: detectGenericFeaturePatterns(context),
+      architecturalPatterns: [
+        "generic-text-indexing",
+        ...(fileTextIncludes(context, hasImportOrInclude)
+          ? ["import-include-usage"]
+          : [])
+      ],
       diagnostics: [
         {
           severity: "info",
@@ -62,21 +87,6 @@ export class GenericTextAdapter implements IAdapter {
       ]
     });
   }
-}
-
-function inferFolders(context: AdapterContext, names: string[]): string[] {
-  const matches = new Set<string>();
-
-  for (const file of context.files) {
-    const segments = file.path.split("/");
-    const match = segments.find((segment) => names.includes(segment));
-
-    if (match) {
-      matches.add(match);
-    }
-  }
-
-  return [...matches].sort((left, right) => left.localeCompare(right));
 }
 
 function isLikelyConfigFile(filePath: string): boolean {
@@ -90,4 +100,76 @@ function isLikelyConfigFile(filePath: string): boolean {
     lower.endsWith("dockerfile") ||
     lower.includes("config")
   );
+}
+
+function detectGenericFeaturePatterns(context: AdapterContext) {
+  const docs = filesMatching(context, isDocFile);
+  const tests = filesMatching(context, isGenericTestFile);
+  const patterns = [];
+
+  if (docs.length > 0) {
+    patterns.push({
+      id: "generic-docs",
+      name: "Documentation files",
+      summary: "Documentation files detected.",
+      files: docs,
+      symbols: [],
+      tags: ["docs"],
+      confidence: "medium" as const
+    });
+  }
+
+  if (tests.length > 0) {
+    patterns.push({
+      id: "generic-tests",
+      name: "Generic test files",
+      summary: "Test files detected from common naming conventions.",
+      files: tests,
+      symbols: [],
+      tags: ["tests"],
+      confidence: "medium" as const
+    });
+  }
+
+  if (fileTextIncludes(context, hasImportOrInclude)) {
+    patterns.push({
+      id: "generic-imports",
+      name: "Import/include usage",
+      summary: "Import or include statements detected in source text.",
+      files: context.files
+        .filter((file) => file.text && hasImportOrInclude(file.text))
+        .map((file) => file.path),
+      symbols: [],
+      tags: ["imports"],
+      confidence: "low" as const
+    });
+  }
+
+  return patterns;
+}
+
+function isDocFile(filePath: string): boolean {
+  const name = fileName(filePath).toLowerCase();
+  return (
+    pathSegments(filePath).includes("docs") ||
+    name === "readme.md" ||
+    name.endsWith(".md") ||
+    name.endsWith(".rst")
+  );
+}
+
+function isGenericTestFile(filePath: string): boolean {
+  const name = fileName(filePath).toLowerCase();
+  return (
+    pathSegments(filePath).some((segment) =>
+      ["test", "tests", "__tests__", "spec"].includes(segment)
+    ) ||
+    name.includes(".test.") ||
+    name.includes(".spec.") ||
+    name.startsWith("test_")
+  );
+}
+
+function hasImportOrInclude(text: string): boolean {
+  return /^\s*(import|from|require\(|#include|include\s)/m.test(text);
 }

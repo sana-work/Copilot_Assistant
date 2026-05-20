@@ -52,8 +52,8 @@ export function getHelpText(): string {
     "Commands:",
     ...commandLines,
     "",
-    "Phase 3 note:",
-    "  Adapter architecture is available. Concrete stack adapters land in later phases."
+    "Phase 4 note:",
+    "  First-class JavaScript/TypeScript, React, Angular, Python, and Java adapters are available."
   ].join("\n");
 }
 
@@ -82,9 +82,9 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    id: "phase-3-doctor",
+    id: "phase-4-doctor",
     status: "ok",
-    summary: "Phase 3 adapter architecture is ready",
+    summary: "Phase 4 first-class adapters are ready",
     environment: {
       nodeVersion,
       packageManager: "npm",

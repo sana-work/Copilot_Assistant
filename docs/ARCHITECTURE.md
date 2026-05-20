@@ -83,6 +83,16 @@ Phase 3 defines the adapter contract in `packages/adapters`:
 
 Adapter outputs stay serializable and use shared models from `packages/shared`.
 
+Phase 4 adds first-class adapters for:
+
+- JavaScript and TypeScript package/config/script detection.
+- React framework and file-pattern detection.
+- Angular workspace, project, command, and file-pattern detection.
+- Python config, framework, package tooling, and test command detection.
+- Java Maven/Gradle framework, package tooling, and build/test command detection.
+
+The generic text adapter remains the fallback for unknown or custom repositories.
+
 ## Artifacts
 
 All runtime artifacts are stored under `.copilot-architect/`:

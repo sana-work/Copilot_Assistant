@@ -24,6 +24,8 @@ Status: implemented with registry selection, confidence sorting, result merging,
 
 Add first-class JavaScript/TypeScript, Angular, React, Node.js, Python, Maven, and Gradle adapters. Add generic fallback adapters for other languages.
 
+Status: implemented for JavaScript/TypeScript, React, Angular, Python, Java Maven, and Java Gradle, with enhanced generic text fallback.
+
 ## Phase 5 - Repo Discovery And Analysis
 
 Build repo discovery, multi-repo workspace discovery, artifact generation, and architecture summaries.

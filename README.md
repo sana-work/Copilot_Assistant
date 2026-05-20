@@ -42,4 +42,4 @@ Runtime artifacts will live under `.copilot-architect/`.
 
 ## Current Phase
 
-Phase 3 adds the universal adapter architecture: adapter interfaces, capabilities, scores, detection results, registry orchestration, merge behavior, command de-duplication, confidence sorting, and generic text fallback. Concrete language/framework adapters, repo analysis, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.
+Phase 4 adds first-class JavaScript/TypeScript, React, Angular, Python, and Java adapters on top of the universal adapter registry. Repo discovery, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.

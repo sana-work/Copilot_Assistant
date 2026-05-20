@@ -15,6 +15,8 @@ Copilot Architect supports all repositories through a universal adapter system. 
 
 Deep support means adapters should detect language, framework, package manager, source folders, test folders, config files, build commands, test commands, lint commands, format commands, likely entry points, and common architectural patterns.
 
+Phase 4 implements first-class detection for JavaScript/TypeScript, React, Angular, Python, Java Maven, and Java Gradle. The adapters are intentionally heuristic and local; they inspect manifests, config files, source file paths, and available file text.
+
 ## Generic Fallback Targets
 
 - Go
