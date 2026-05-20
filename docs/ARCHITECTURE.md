@@ -74,6 +74,15 @@ The MCP server exposes repo intelligence tools to local agent hosts. It should u
 
 Adapters detect repository characteristics and provide commands, folders, entry points, and architectural hints. Deep adapters are prioritized for JavaScript, TypeScript, Angular, React, Node.js, Python, Java Maven, and Java Gradle. Generic adapters provide fallback support for unknown or custom repositories.
 
+Phase 3 defines the adapter contract in `packages/adapters`:
+
+- `IAdapter` is the base interface for every adapter.
+- Specialized interfaces cover languages, frameworks, package managers, build commands, test commands, lint commands, format commands, and repo heuristics.
+- `AdapterRegistry` registers adapters, runs all matching adapters, sorts detection results by confidence, merges results, and de-duplicates commands.
+- `GenericTextAdapter` is the fallback adapter when no specialized adapter matches.
+
+Adapter outputs stay serializable and use shared models from `packages/shared`.
+
 ## Artifacts
 
 All runtime artifacts are stored under `.copilot-architect/`:

@@ -21,6 +21,7 @@ This project is TypeScript/Node.js-first. Do not implement the MVP in C#/.NET. D
 - Keep business logic in core packages.
 - Keep `packages/vscode-extension` and `packages/web` as thin shells.
 - Keep shared serializable models, schema constants, artifact paths, and JSON helpers in `packages/shared`.
+- Keep adapter contracts, registry behavior, and generic fallback support in `packages/adapters`.
 - Prefer simple working implementations over complex incomplete architecture.
 - Use npm unless the repository already uses pnpm.
 - Use Vitest for tests.

@@ -38,7 +38,9 @@ describe("CLI skeleton", () => {
     expect(result.exitCode).toBe(0);
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
-    expect(capture.stdout.join("\n")).toContain("Phase 2 shared models are ready");
+    expect(capture.stdout.join("\n")).toContain(
+      "Phase 3 adapter architecture is ready"
+    );
   });
 
   it("prints help for --help", async () => {

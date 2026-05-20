@@ -52,8 +52,8 @@ export function getHelpText(): string {
     "Commands:",
     ...commandLines,
     "",
-    "Phase 2 note:",
-    "  Commands use shared models where available. Business logic lands in later phases."
+    "Phase 3 note:",
+    "  Adapter architecture is available. Concrete stack adapters land in later phases."
   ].join("\n");
 }
 
@@ -82,9 +82,9 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    id: "phase-2-doctor",
+    id: "phase-3-doctor",
     status: "ok",
-    summary: "Phase 2 shared models are ready",
+    summary: "Phase 3 adapter architecture is ready",
     environment: {
       nodeVersion,
       packageManager: "npm",

@@ -2,8 +2,6 @@
 
 Copilot Architect is a TypeScript/Node.js-first internal team tool for making coding agents more repo-aware. It helps teams analyze repositories, detect stacks, build local repo intelligence, plan features, generate handoff prompts, run safe validation, create custom Copilot agents and instructions, and produce review reports.
 
-This is not a commercial product. The MVP is not implemented in C#/.NET and does not include a Visual Studio VSIX.
-
 ## Quickstart
 
 ```bash
@@ -44,4 +42,4 @@ Runtime artifacts will live under `.copilot-architect/`.
 
 ## Current Phase
 
-Phase 2 adds shared serializable domain models, schema version constants, `.copilot-architect/` artifact path helpers, JSON read/write helpers, and tests. Repo analysis, adapters, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.
+Phase 3 adds the universal adapter architecture: adapter interfaces, capabilities, scores, detection results, registry orchestration, merge behavior, command de-duplication, confidence sorting, and generic text fallback. Concrete language/framework adapters, repo analysis, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.

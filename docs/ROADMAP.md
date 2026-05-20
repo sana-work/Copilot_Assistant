@@ -18,6 +18,8 @@ Status: implemented as the shared Phase 2 model surface with JSON and artifact h
 
 Implement adapter interfaces, registry, scoring, merging, capabilities, and generic fallback behavior.
 
+Status: implemented with registry selection, confidence sorting, result merging, command de-duplication, and generic text fallback.
+
 ## Phase 4 - Language And Toolchain Adapters
 
 Add first-class JavaScript/TypeScript, Angular, React, Node.js, Python, Maven, and Gradle adapters. Add generic fallback adapters for other languages.
