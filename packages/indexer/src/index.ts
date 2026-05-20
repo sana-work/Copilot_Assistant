@@ -1,4 +1,2 @@
-export const indexerPackage = {
-  name: "@copilot-architect/indexer",
-  phase: "skeleton"
-} as const;
+export * from "./indexing-service.js";
+export * from "./models.js";

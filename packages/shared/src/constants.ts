@@ -27,6 +27,7 @@ export const CLI_COMMANDS = [
   "index",
   "search",
   "plan",
+  "commands",
   "validate",
   "review",
   "handoff",

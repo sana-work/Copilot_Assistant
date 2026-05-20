@@ -1,4 +1,2 @@
-export const validatorPackage = {
-  name: "@copilot-architect/validator",
-  phase: "skeleton"
-} as const;
+export * from "./command-config-service.js";
+export * from "./models.js";

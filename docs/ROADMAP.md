@@ -30,23 +30,39 @@ Status: implemented for JavaScript/TypeScript, React, Angular, Python, Java Mave
 
 Build repo discovery, multi-repo workspace discovery, artifact generation, and architecture summaries.
 
+Status: implemented as `RepoDiscoveryService` with CLI `analyze`, `--json`, and `--output` support for single-repo analysis and monorepo/project-root inference.
+
 ## Phase 6 - Indexing And Search
 
 Implement local scanning, ignore rules, JSON or SQLite index storage, text search, and similar feature search.
+
+Status: implemented as JSON index storage with full indexing, incremental indexing, rebuild, status, ranked search, and similar feature search.
 
 ## Phase 7 - Planning
 
 Generate feature plans, impact summaries, validation strategy, Markdown output, and JSON plan artifacts.
 
-## Phase 8 - Validation And Safety
+Status: implemented as `FeaturePlanningService` with CLI `plan` and `--json` support, repo-map and index integration, optional workspace/custom-command/instruction context, similar-feature candidates, stack-specific planning, validation command suggestions, Markdown/JSON artifacts, and human approval checkpoints.
 
-Implement custom command config, safety policy checks, safe execution, timeouts, retries, validation logs, failure classification, and fix prompts.
+## Phase 8 - Custom Command Configuration
 
-## Phase 9 - Agents And Instructions
+Implement `.copilot-architect/commands.json`, command config parsing, schema validation, detected/custom command merging, override behavior, helpful errors, and CLI support for `init`, `commands validate`, and `commands list`.
+
+Status: implemented as `CommandConfigService` with categorized command parsing, template initialization, helpful validation errors, override-aware merge behavior, CLI commands, and planner integration.
+
+## Phase 9 - Universal Validation Engine
+
+Run safe commands only, support timeouts and retries, stream output, save logs and reports, redact secrets, summarize failures, and generate fix prompts.
+
+## Phase 10 - Safety Policy And Audit
+
+Implement the safety policy engine, command risk assessment, audit logging, secret redaction, workspace boundary checks, and approval gates.
+
+## Phase 11 - Agents And Instructions
 
 Generate custom Copilot agents, Copilot instructions, AGENTS.md suggestions, skill templates, backup-before-overwrite behavior, and doctor/update commands.
 
-## Phase 10 - Review Reports
+## Phase 12 - Review Reports
 
 Generate review reports from git diff, validation evidence, plan-vs-diff comparison, risk analysis, missing-test detection, and reviewer prompts.
 

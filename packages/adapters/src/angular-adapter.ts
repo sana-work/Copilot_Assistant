@@ -71,7 +71,7 @@ export class AngularAdapter
   canHandle(context: AdapterContext): boolean {
     const packageJson = getPackageJson(context);
     return (
-      context.hasFile("angular.json") ||
+      hasAngularWorkspaceFile(context) ||
       hasPackageDependency(packageJson, "@angular/core") ||
       hasPackageDependency(packageJson, "@angular/cli")
     );
@@ -103,15 +103,16 @@ export class AngularAdapter
     const frameworks: FrameworkInfo[] = [];
 
     if (
-      context.hasFile("angular.json") ||
+      hasAngularWorkspaceFile(context) ||
       hasPackageDependency(packageJson, "@angular/core")
     ) {
+      const hasWorkspaceFile = hasAngularWorkspaceFile(context);
       frameworks.push({
         name: "Angular",
         version: getPackageDependencyVersion(packageJson, "@angular/core"),
         ecosystem: "javascript",
-        confidence: context.hasFile("angular.json") ? "high" : "medium",
-        evidence: context.hasFile("angular.json")
+        confidence: hasWorkspaceFile ? "high" : "medium",
+        evidence: hasWorkspaceFile
           ? ["angular.json"]
           : ["package.json dependency: @angular/core"]
       });
@@ -138,7 +139,7 @@ export class AngularAdapter
         name: "ng build",
         command: "ng",
         args: ["build"],
-        confidence: context.hasFile("angular.json") ? "high" : "medium",
+        confidence: hasAngularWorkspaceFile(context) ? "high" : "medium",
         source: "Angular CLI"
       },
       ...packageCommands.build
@@ -153,7 +154,7 @@ export class AngularAdapter
         name: "ng test",
         command: "ng",
         args: ["test"],
-        confidence: context.hasFile("angular.json") ? "high" : "medium",
+        confidence: hasAngularWorkspaceFile(context) ? "high" : "medium",
         source: "Angular CLI"
       },
       ...packageCommands.test
@@ -202,7 +203,9 @@ export class AngularAdapter
           "tsconfig.json",
           "tsconfig.app.json",
           "tsconfig.spec.json"
-        ].includes(filePath) || fileName(filePath).startsWith(".eslintrc")
+        ].includes(filePath) ||
+        fileName(filePath) === "angular.json" ||
+        fileName(filePath).startsWith(".eslintrc")
     );
   }
 
@@ -233,7 +236,7 @@ export class AngularAdapter
       adapterVersion: this.version,
       capabilities: this.capabilities,
       score: new AdapterScore({
-        value: context.hasFile("angular.json") ? 0.95 : 0.8,
+        value: hasAngularWorkspaceFile(context) ? 0.95 : 0.8,
         reasons: frameworks.flatMap((framework) => framework.evidence)
       }),
       languages: this.detectLanguages(context),
@@ -251,6 +254,10 @@ export class AngularAdapter
       architecturalPatterns: this.detectArchitecturalPatterns(context)
     });
   }
+}
+
+function hasAngularWorkspaceFile(context: AdapterContext): boolean {
+  return context.files.some((file) => fileName(file.path) === "angular.json");
 }
 
 function packageScriptCommands(context: AdapterContext): {

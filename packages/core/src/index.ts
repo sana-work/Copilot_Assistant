@@ -1,4 +1,1 @@
-export const corePackage = {
-  name: "@copilot-architect/core",
-  phase: "skeleton"
-} as const;
+export * from "./repo-discovery.js";

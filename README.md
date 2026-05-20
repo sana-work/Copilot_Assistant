@@ -16,6 +16,8 @@ Expected later workflow:
 
 ```bash
 npm run cli -- init
+npm run cli -- commands validate
+npm run cli -- commands list
 npm run cli -- analyze
 npm run cli -- index
 npm run cli -- search "invoice"
@@ -42,4 +44,12 @@ Runtime artifacts will live under `.copilot-architect/`.
 
 ## Current Phase
 
-Phase 4 adds first-class JavaScript/TypeScript, React, Angular, Python, and Java adapters on top of the universal adapter registry. Repo discovery, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.
+Phase 8 adds custom command configuration under `.copilot-architect/commands.json`. Copilot Architect can initialize, validate, and list team-defined build/test/lint/format/validation commands:
+
+```bash
+npm run cli -- init
+npm run cli -- commands validate
+npm run cli -- commands list
+```
+
+Custom commands are parsed into validation plan commands and merged ahead of detected commands, with explicit override support. Phase 8 does not execute commands; safe validation execution starts in the next phase.

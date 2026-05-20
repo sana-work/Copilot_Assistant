@@ -16,7 +16,6 @@ import {
 import {
   fileName,
   filesMatching,
-  fileTextIncludes,
   getPackageDependencyVersion,
   getPackageJson,
   hasAnyExtension,
@@ -44,7 +43,7 @@ export class ReactAdapter
       hasPackageDependency(packageJson, "@vitejs/plugin-react") ||
       hasPackageDependency(packageJson, "next") ||
       hasPackageDependency(packageJson, "react-scripts") ||
-      fileTextIncludes(context, (text) => text.includes("@vitejs/plugin-react")) ||
+      hasViteReactConfig(context) ||
       context.files.some((file) => isReactSource(file.path))
     );
   }
@@ -116,7 +115,7 @@ export class ReactAdapter
 
     if (
       hasPackageDependency(packageJson, "@vitejs/plugin-react") ||
-      fileTextIncludes(context, (text) => text.includes("@vitejs/plugin-react"))
+      hasViteReactConfig(context)
     ) {
       frameworks.push({
         name: "Vite React",
@@ -199,6 +198,14 @@ export class ReactAdapter
       architecturalPatterns: this.detectArchitecturalPatterns(context)
     });
   }
+}
+
+function hasViteReactConfig(context: AdapterContext): boolean {
+  return context.files.some(
+    (file) =>
+      fileName(file.path).startsWith("vite.config.") &&
+      file.text?.includes("@vitejs/plugin-react")
+  );
 }
 
 function detectReactFeaturePatterns(context: AdapterContext): FeaturePattern[] {

@@ -9,7 +9,11 @@
     "copilot-architect": "./dist/index.js"
   },
   "dependencies": {
-    "@copilot-architect/shared": "0.1.0"
+    "@copilot-architect/core": "0.1.0",
+    "@copilot-architect/indexer": "0.1.0",
+    "@copilot-architect/planner": "0.1.0",
+    "@copilot-architect/shared": "0.1.0",
+    "@copilot-architect/validator": "0.1.0"
   },
   "exports": {
     ".": {

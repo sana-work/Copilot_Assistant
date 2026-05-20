@@ -93,6 +93,34 @@ Phase 4 adds first-class adapters for:
 
 The generic text adapter remains the fallback for unknown or custom repositories.
 
+## Repo Discovery
+
+`packages/core` owns repo discovery orchestration. `RepoDiscoveryService` finds the effective repo root, detects Git presence, scans repository files with common dependency/build folders ignored, builds adapter context, runs the default adapter registry, infers documentation files and project roots, creates a `UniversalRepoMap`, and writes `.copilot-architect/repo-map.json`.
+
+The CLI `analyze` command calls this service. It does not duplicate discovery logic.
+
+## Local Index
+
+`packages/indexer` owns local indexing and search. The MVP uses a JSON index at `.copilot-architect/index/index.json` with a status artifact at `.copilot-architect/index/status.json`.
+
+Indexed documents include relative path, extension, language guess, content hash, modified time, file size, text preview, extracted symbols, imports/includes, and test/config/doc flags. The indexer skips common dependency, build, cache, and IDE folders.
+
+The CLI `index` and `search` commands call `IndexingService`; they do not implement indexing logic directly.
+
+## Feature Planning
+
+`packages/planner` owns feature plan generation. `FeaturePlanningService` reads or creates `.copilot-architect/repo-map.json`, reads optional workspace/custom command context, detects available instruction files, refreshes the local index, runs similar-feature search, and renders deterministic JSON and Markdown plan artifacts under `.copilot-architect/plans/`.
+
+Plan artifacts include request interpretation, repo architecture summary, planning context, relevant files, similar feature candidates, impacted stacks and modules, likely files to modify, likely new files, frontend/backend/data/config/security/performance impacts, test strategy, validation commands, implementation steps, risks, assumptions, open questions, and a human approval checkpoint.
+
+The CLI `plan` command calls `FeaturePlanningService`; it does not duplicate planning logic. Planning is read-only for application code and only writes Copilot Architect artifacts.
+
+## Custom Command Configuration
+
+`packages/validator` owns custom command configuration for `.copilot-architect/commands.json`. `CommandConfigService` creates the template during `init`, parses categorized `build`, `test`, `lint`, `format`, and `validation` entries, validates schema errors with actionable messages, normalizes command strings into structured validation commands, and merges custom commands ahead of detected commands.
+
+The CLI `init`, `commands validate`, and `commands list` commands call `CommandConfigService`; they do not execute configured commands. Command execution, safety policy checks, logs, retries, and validation reports are handled in later validation phases.
+
 ## Artifacts
 
 All runtime artifacts are stored under `.copilot-architect/`:

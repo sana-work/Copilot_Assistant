@@ -39,7 +39,7 @@ describe("CLI skeleton", () => {
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
     expect(capture.stdout.join("\n")).toContain(
-      "Phase 4 first-class adapters are ready"
+      "Phase 8 custom command configuration is ready"
     );
   });
 

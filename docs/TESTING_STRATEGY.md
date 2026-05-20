@@ -29,6 +29,9 @@ Use Vitest for unit, integration, and end-to-end sample tests.
 - CLI tests verify command behavior and artifact creation.
 - MCP tests exercise tool handlers without requiring external agent hosts.
 - Safety tests prove dangerous commands are blocked and secrets are redacted.
+- Indexer tests verify artifact creation, ignored folders, incremental reuse, ranked search, and CLI search output.
+- Planner tests verify JSON and Markdown plan artifact creation, repo-map and index usage, optional workspace/custom-command/instruction context, similar-feature search, stack-specific planning, validation command suggestions, CLI `plan` output, and read-only behavior for application files.
+- Command config tests verify `commands.json` initialization, categorized command parsing, schema validation errors, override-aware merging, CLI `commands validate`, CLI `commands list`, and planner validation-plan integration.
 
 ## Sample Repositories
 

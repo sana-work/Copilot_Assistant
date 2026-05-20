@@ -61,6 +61,8 @@ export interface RepoMap extends GeneratedArtifact {
   commands: RepoCommandSet;
   entryPoints: EntryPoint[];
   featurePatterns: FeaturePattern[];
+  documentationFiles: string[];
+  architecturalPatterns: string[];
   diagnostics: DiagnosticMessage[];
 }
 
