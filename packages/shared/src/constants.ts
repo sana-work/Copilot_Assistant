@@ -1,6 +1,25 @@
 export const PROJECT_NAME = "Copilot Architect";
 
+export const CURRENT_SCHEMA_VERSION = "0.1.0";
+
 export const ARTIFACT_DIRECTORY = ".copilot-architect";
+
+export const ARTIFACT_FILE_NAMES = {
+  repoMap: "repo-map.json",
+  workspace: "workspace.json",
+  commands: "commands.json",
+  policy: "policy.json"
+} as const;
+
+export const ARTIFACT_DIRECTORY_NAMES = {
+  index: "index",
+  plans: "plans",
+  handoffs: "handoffs",
+  runs: "runs",
+  reviews: "reviews",
+  audit: "audit",
+  diagnostics: "diagnostics"
+} as const;
 
 export const CLI_COMMANDS = [
   "init",

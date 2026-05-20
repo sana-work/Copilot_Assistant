@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { CLI_COMMANDS } from "../packages/shared/src/index.js";
-import { getDoctorText, getHelpText, runCli } from "../packages/cli/src/index.js";
+import {
+  getDoctorReport,
+  getDoctorText,
+  getHelpText,
+  runCli
+} from "../packages/cli/src/index.js";
 
 function createCapture() {
   const stdout: string[] = [];
@@ -33,7 +38,7 @@ describe("CLI skeleton", () => {
     expect(result.exitCode).toBe(0);
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
-    expect(capture.stdout.join("\n")).toContain("Visual Studio VSIX MVP: not present");
+    expect(capture.stdout.join("\n")).toContain("Phase 2 shared models are ready");
   });
 
   it("prints help for --help", async () => {
@@ -54,5 +59,13 @@ describe("CLI skeleton", () => {
 
   it("exports stable doctor text for command-line use", () => {
     expect(getDoctorText("v20.11.0")).toContain("Node.js: v20.11.0");
+  });
+
+  it("uses the shared diagnostic report model for doctor output", () => {
+    const report = getDoctorReport("v20.11.0");
+
+    expect(report.schemaVersion).toBe("0.1.0");
+    expect(report.environment.packageManager).toBe("npm");
+    expect(report.checks.map((check) => check.name)).toContain("visual-studio-vsix");
   });
 });

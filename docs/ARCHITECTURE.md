@@ -93,6 +93,14 @@ All runtime artifacts are stored under `.copilot-architect/`:
   diagnostics/
 ```
 
+Shared artifact constants and JSON helpers live in `packages/shared`. All packages should use these helpers instead of hard-coding artifact paths.
+
+## Shared Domain Models
+
+`packages/shared` owns serializable TypeScript interfaces for repo context, workspace context, repo maps, commands, feature plans, validation results, review reports, safety policy, audit logs, handoff prompts, agent templates, instruction generation, MCP tool results, workspace config, enterprise policy, and diagnostics.
+
+Top-level artifacts include `schemaVersion` fields so future migrations can be handled explicitly.
+
 ## Dependency Strategy
 
 The MVP uses a minimal dependency strategy: TypeScript, Node.js, npm, Vitest, and focused packages only when they remove meaningful implementation risk. The local index starts with JSON or SQLite rather than a heavy vector database.

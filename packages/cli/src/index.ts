@@ -3,7 +3,10 @@
 import { pathToFileURL } from "node:url";
 
 import {
+  ARTIFACT_DIRECTORY,
   CLI_COMMANDS,
+  CURRENT_SCHEMA_VERSION,
+  type DiagnosticReport,
   type CliCommandName,
   PROJECT_NAME
 } from "@copilot-architect/shared";
@@ -49,22 +52,63 @@ export function getHelpText(): string {
     "Commands:",
     ...commandLines,
     "",
-    "Phase 1 note:",
-    "  Commands are registered as placeholders. Business logic lands in later phases."
+    "Phase 2 note:",
+    "  Commands use shared models where available. Business logic lands in later phases."
   ].join("\n");
 }
 
 export function getDoctorText(nodeVersion = process.version): string {
+  const report = getDoctorReport(nodeVersion);
+  const checkLines = report.checks.map(
+    (check) => `- ${check.name}: ${check.status} - ${check.message}`
+  );
+
   return [
     `${PROJECT_NAME} doctor`,
     "",
-    `Node.js: ${nodeVersion}`,
+    `Schema: ${report.schemaVersion}`,
+    `Node.js: ${report.environment.nodeVersion}`,
     "Runtime: TypeScript/Node.js-first",
-    "Package manager: npm",
-    "C#/.NET MVP engine: not present",
-    "Visual Studio VSIX MVP: not present",
-    "Status: Phase 1 skeleton is ready"
+    `Package manager: ${report.environment.packageManager}`,
+    `Artifact root: ${report.artifactRoot}`,
+    `Status: ${report.summary}`,
+    "",
+    "Checks:",
+    ...checkLines
   ].join("\n");
+}
+
+export function getDoctorReport(nodeVersion = process.version): DiagnosticReport {
+  return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    id: "phase-2-doctor",
+    status: "ok",
+    summary: "Phase 2 shared models are ready",
+    environment: {
+      nodeVersion,
+      packageManager: "npm",
+      platform: process.platform
+    },
+    checks: [
+      {
+        name: "runtime",
+        status: "ok",
+        message: "TypeScript/Node.js-first"
+      },
+      {
+        name: "dotnet-engine",
+        status: "ok",
+        message: "C#/.NET MVP engine is not present"
+      },
+      {
+        name: "visual-studio-vsix",
+        status: "ok",
+        message: "Visual Studio VSIX MVP is not present"
+      }
+    ],
+    artifactRoot: ARTIFACT_DIRECTORY
+  };
 }
 
 export async function runCli(
@@ -106,7 +150,7 @@ function getPlaceholderText(command: CliCommandName, args: string[]): string {
     "",
     `${commandDescriptions[command]}`,
     "",
-    `Phase 1 placeholder registered successfully.${argText}`
+    `Phase 2 placeholder registered with shared domain models.${argText}`
   ].join("\n");
 }
 

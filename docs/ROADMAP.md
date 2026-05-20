@@ -12,6 +12,8 @@ Create the npm workspace, package folders, placeholder CLI commands, TypeScript 
 
 Add serializable shared models for repository context, workspace context, repo maps, plans, validation results, review reports, safety policies, audit logs, handoff prompts, agents, instructions, MCP results, and diagnostics.
 
+Status: implemented as the shared Phase 2 model surface with JSON and artifact helpers.
+
 ## Phase 3 - Adapter Architecture
 
 Implement adapter interfaces, registry, scoring, merging, capabilities, and generic fallback behavior.

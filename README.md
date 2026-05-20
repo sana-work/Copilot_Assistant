@@ -44,4 +44,4 @@ Runtime artifacts will live under `.copilot-architect/`.
 
 ## Current Phase
 
-Phase 0 and Phase 1 establish documentation, boundaries, npm workspace structure, TypeScript build configuration, Vitest, and placeholder CLI commands. Repo analysis, adapters, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.
+Phase 2 adds shared serializable domain models, schema version constants, `.copilot-architect/` artifact path helpers, JSON read/write helpers, and tests. Repo analysis, adapters, indexing, planning, validation, agents, MCP tools, and review logic are implemented in later phases.
