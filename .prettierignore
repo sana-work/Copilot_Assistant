@@ -1,0 +1,7 @@
+AGENTS.md
+Requirement.md
+node_modules/
+coverage/
+dist/
+packages/*/dist/
+.copilot-architect/

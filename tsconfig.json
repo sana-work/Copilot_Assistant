@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@copilot-architect/*": ["packages/*/src/index.ts"]
+    }
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/core" },
+    { "path": "./packages/adapters" },
+    { "path": "./packages/indexer" },
+    { "path": "./packages/planner" },
+    { "path": "./packages/validator" },
+    { "path": "./packages/reviewer" },
+    { "path": "./packages/agents" },
+    { "path": "./packages/instructions" },
+    { "path": "./packages/mcp-server" },
+    { "path": "./packages/cli" },
+    { "path": "./packages/vscode-extension" },
+    { "path": "./packages/web" }
+  ]
+}

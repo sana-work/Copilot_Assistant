@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+dist/
+packages/*/dist/
+.copilot-architect/
+.DS_Store
+*.log
+*.tsbuildinfo
