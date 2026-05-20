@@ -27,6 +27,7 @@ import {
 import { renderFeaturePlanMarkdown } from "./markdown-renderer.js";
 import type {
   FeaturePlanArtifact,
+  FeaturePlanPreviewResult,
   FeaturePlanningOptions,
   FeaturePlanningResult,
   PlanArtifactPaths,
@@ -43,6 +44,29 @@ interface PlanningContext {
 
 export class FeaturePlanningService {
   async createPlan(options: FeaturePlanningOptions): Promise<FeaturePlanningResult> {
+    const preview = await this.createPlanPreview(options);
+    const paths = createPlanArtifactPaths(preview.repoRoot, preview.plan.id);
+
+    await mkdir(getArtifactDirectoryPath(preview.repoRoot, "plans"), {
+      recursive: true
+    });
+    await writeJsonFile(paths.timestampJsonPath, preview.plan);
+    await writeJsonFile(paths.latestJsonPath, preview.plan);
+    await writeTextFile(paths.timestampMarkdownPath, preview.markdown);
+    await writeTextFile(paths.latestMarkdownPath, preview.markdown);
+
+    return {
+      ...preview,
+      jsonPath: paths.timestampJsonPath,
+      markdownPath: paths.timestampMarkdownPath,
+      latestJsonPath: paths.latestJsonPath,
+      latestMarkdownPath: paths.latestMarkdownPath
+    };
+  }
+
+  async createPlanPreview(
+    options: FeaturePlanningOptions
+  ): Promise<FeaturePlanPreviewResult> {
     const request = options.request.trim();
 
     if (!request) {
@@ -74,22 +98,11 @@ export class FeaturePlanningService {
       planningContext
     );
     const markdown = renderFeaturePlanMarkdown(plan);
-    const paths = createPlanArtifactPaths(repoRoot, plan.id);
-
-    await mkdir(getArtifactDirectoryPath(repoRoot, "plans"), { recursive: true });
-    await writeJsonFile(paths.timestampJsonPath, plan);
-    await writeJsonFile(paths.latestJsonPath, plan);
-    await writeTextFile(paths.timestampMarkdownPath, markdown);
-    await writeTextFile(paths.latestMarkdownPath, markdown);
 
     return {
       repoRoot,
       plan,
       markdown,
-      jsonPath: paths.timestampJsonPath,
-      markdownPath: paths.timestampMarkdownPath,
-      latestJsonPath: paths.latestJsonPath,
-      latestMarkdownPath: paths.latestMarkdownPath,
       searchResults: searchResponse.results
     };
   }

@@ -19,6 +19,13 @@ export interface FeaturePlanningResult {
   searchResults: SearchResult[];
 }
 
+export interface FeaturePlanPreviewResult {
+  repoRoot: string;
+  plan: FeaturePlanArtifact;
+  markdown: string;
+  searchResults: SearchResult[];
+}
+
 export interface FeaturePlanArtifact extends FeaturePlan {
   requestInterpretation: string;
   repoArchitectureSummary: string;

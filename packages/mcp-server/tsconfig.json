@@ -8,5 +8,12 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../indexer" },
+    { "path": "../planner" },
+    { "path": "../shared" },
+    { "path": "../validator" }
+  ]
 }

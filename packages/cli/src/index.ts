@@ -12,11 +12,20 @@ import {
   FeaturePlanningService,
   type FeaturePlanningResult
 } from "@copilot-architect/planner";
+import { startMcpServer } from "@copilot-architect/mcp-server";
 import {
+  AuditLogService,
   CommandConfigService,
+  SafetyPolicyService,
+  ValidationService,
+  type AuditListResult,
+  type CommandConfigCategory,
   type ParsedCommandConfig,
   type CommandConfigInitResult,
-  type CommandConfigValidationResult
+  type SafetyPolicyInitResult,
+  type SafetyPolicyValidationResult,
+  type CommandConfigValidationResult,
+  type ValidationRunResult
 } from "@copilot-architect/validator";
 import {
   ARTIFACT_DIRECTORY,
@@ -44,6 +53,8 @@ const commandDescriptions = {
   plan: "Generate a feature implementation plan.",
   commands: "Manage custom validation command configuration.",
   validate: "Run safe validation commands.",
+  policy: "Inspect and validate the local safety policy.",
+  audit: "List local audit log entries.",
   review: "Generate a review report from diff and validation evidence.",
   handoff: "Generate an implementation handoff prompt.",
   agents: "Manage custom Copilot agent templates and installs.",
@@ -69,8 +80,8 @@ export function getHelpText(): string {
     "Commands:",
     ...commandLines,
     "",
-    "Phase 8 note:",
-    "  Custom command configuration is available."
+    "Phase 11 note:",
+    "  Local MCP server tools are available through `npm run cli -- mcp`."
   ].join("\n");
 }
 
@@ -99,9 +110,9 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    id: "phase-8-doctor",
+    id: "phase-11-doctor",
     status: "ok",
-    summary: "Phase 8 custom command configuration is ready",
+    summary: "Phase 11 local MCP server is ready",
     environment: {
       nodeVersion,
       packageManager: "npm",
@@ -152,11 +163,26 @@ export async function runCli(
     return { exitCode: 0 };
   }
 
+  if (rawCommand === "mcp") {
+    try {
+      const options = parseMcpArgs(commandArgs);
+      await startMcpServer({ startPath: options.startPath });
+      return { exitCode: 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
   if (rawCommand === "init") {
     try {
       const options = parseInitArgs(commandArgs);
-      const result = await new CommandConfigService().init(options);
-      stdout(getInitSummaryText(result));
+      const commandResult = await new CommandConfigService().init(options);
+      const policyResult = await new SafetyPolicyService().init(
+        options.startPath,
+        options.overwrite ?? false
+      );
+      stdout(getInitSummaryText(commandResult, policyResult));
       return { exitCode: 0 };
     } catch (error) {
       stderr(error instanceof Error ? error.message : String(error));
@@ -188,6 +214,48 @@ export async function runCli(
           ? JSON.stringify(parsed.normalized, null, 2)
           : getCommandsListText(parsed)
       );
+      return { exitCode: 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "policy") {
+    try {
+      const options = parsePolicyArgs(commandArgs);
+      const service = new SafetyPolicyService();
+
+      if (options.subcommand === "show") {
+        const policy = await service.load(options.startPath);
+        stdout(JSON.stringify(policy, null, 2));
+        return { exitCode: 0 };
+      }
+
+      const result = await service.validate(options.startPath);
+      stdout(
+        options.json ? JSON.stringify(result, null, 2) : getPolicyValidateText(result)
+      );
+      return { exitCode: result.ok ? 0 : 1 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "audit") {
+    try {
+      const options = parseAuditArgs(commandArgs);
+
+      if (options.subcommand !== "list") {
+        throw new Error("Expected audit subcommand: list");
+      }
+
+      const result = await new AuditLogService().list(
+        options.startPath ?? process.cwd(),
+        options.limit
+      );
+      stdout(options.json ? JSON.stringify(result, null, 2) : getAuditListText(result));
       return { exitCode: 0 };
     } catch (error) {
       stderr(error instanceof Error ? error.message : String(error));
@@ -254,6 +322,33 @@ export async function runCli(
     }
   }
 
+  if (rawCommand === "validate") {
+    try {
+      const options = parseValidateArgs(commandArgs);
+      const result = await new ValidationService().validate({
+        startPath: options.startPath,
+        categories: options.categories,
+        timeoutMs: options.timeoutMs,
+        onOutput: options.stream
+          ? (event) => {
+              if (event.text.trim()) {
+                stdout(`[${event.commandName}] ${event.text.trimEnd()}`);
+              }
+            }
+          : undefined
+      });
+      stdout(
+        options.json
+          ? JSON.stringify(result.report, null, 2)
+          : getValidateSummaryText(result)
+      );
+      return { exitCode: result.report.status === "passed" ? 0 : 1 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
   stdout(getPlaceholderText(rawCommand, commandArgs));
   return { exitCode: 0 };
 }
@@ -267,6 +362,34 @@ interface AnalyzeCliOptions {
 interface InitCliOptions {
   startPath?: string;
   overwrite?: boolean;
+}
+
+interface McpCliOptions {
+  startPath?: string;
+}
+
+function parseMcpArgs(args: string[]): McpCliOptions {
+  const options: McpCliOptions = {};
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--path") {
+      const startPath = args[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown mcp argument: ${arg}`);
+  }
+
+  return options;
 }
 
 function parseInitArgs(args: string[]): InitCliOptions {
@@ -342,6 +465,107 @@ function parseCommandsArgs(args: string[]): CommandsCliOptions {
   return options;
 }
 
+interface PolicyCliOptions {
+  subcommand: "show" | "validate";
+  startPath?: string;
+  json: boolean;
+}
+
+function parsePolicyArgs(args: string[]): PolicyCliOptions {
+  const [subcommand, ...rest] = args;
+
+  if (subcommand !== "show" && subcommand !== "validate") {
+    throw new Error("Expected policy subcommand: show or validate");
+  }
+
+  const options: PolicyCliOptions = {
+    subcommand,
+    json: false
+  };
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      const startPath = rest[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown policy argument: ${arg}`);
+  }
+
+  return options;
+}
+
+interface AuditCliOptions {
+  subcommand: "list";
+  startPath?: string;
+  limit?: number;
+  json: boolean;
+}
+
+function parseAuditArgs(args: string[]): AuditCliOptions {
+  const [subcommand, ...rest] = args;
+
+  if (subcommand !== "list") {
+    throw new Error("Expected audit subcommand: list");
+  }
+
+  const options: AuditCliOptions = {
+    subcommand,
+    json: false
+  };
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--limit") {
+      const limit = Number(rest[index + 1]);
+
+      if (!Number.isFinite(limit) || limit <= 0) {
+        throw new Error("Missing or invalid value for --limit");
+      }
+
+      options.limit = limit;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--path") {
+      const startPath = rest[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown audit argument: ${arg}`);
+  }
+
+  return options;
+}
+
 function parseAnalyzeArgs(args: string[]): AnalyzeCliOptions {
   const options: AnalyzeCliOptions = {
     json: false
@@ -400,13 +624,19 @@ function getAnalyzeSummaryText(
   ].join("\n");
 }
 
-function getInitSummaryText(result: CommandConfigInitResult): string {
+function getInitSummaryText(
+  result: CommandConfigInitResult,
+  policyResult: SafetyPolicyInitResult
+): string {
   return [
     `${PROJECT_NAME}: init`,
     "",
     result.message,
     `Commands config: ${result.configPath}`,
-    `Created: ${result.created ? "yes" : "no"}`
+    `Commands created: ${result.created ? "yes" : "no"}`,
+    policyResult.message,
+    `Policy config: ${policyResult.policyPath}`,
+    `Policy created: ${policyResult.created ? "yes" : "no"}`
   ].join("\n");
 }
 
@@ -455,6 +685,42 @@ function getCommandsListText(config: ParsedCommandConfig): string {
       `${customCommand.category}: ${command.name}${cwd}${override}`,
       `  ${[command.command, ...command.args].join(" ")}`
     );
+  }
+
+  return lines.join("\n");
+}
+
+function getPolicyValidateText(result: SafetyPolicyValidationResult): string {
+  const lines = [
+    `${PROJECT_NAME}: policy validate`,
+    "",
+    `Policy: ${result.policyPath}`,
+    `Status: ${result.ok ? "ok" : "error"}`,
+    `Blocked patterns: ${result.policy.blockedPatterns.length}`,
+    `Secret redaction patterns: ${result.policy.secretRedactionPatterns.length}`
+  ];
+
+  if (result.errors.length > 0) {
+    lines.push("", "Errors:", ...result.errors.map((error) => `- ${error}`));
+  }
+
+  if (result.warnings.length > 0) {
+    lines.push("", "Warnings:", ...result.warnings.map((warning) => `- ${warning}`));
+  }
+
+  return lines.join("\n");
+}
+
+function getAuditListText(result: AuditListResult): string {
+  const lines = [
+    `${PROJECT_NAME}: audit list`,
+    "",
+    `Audit log: ${result.auditPath}`,
+    `Entries: ${result.entries.length}`
+  ];
+
+  for (const entry of result.entries) {
+    lines.push("", `${entry.timestamp} ${entry.actor} ${entry.action}`, entry.summary);
   }
 
   return lines.join("\n");
@@ -586,6 +852,91 @@ interface PlanCliOptions {
   json: boolean;
 }
 
+interface ValidateCliOptions {
+  startPath?: string;
+  categories?: CommandConfigCategory[];
+  timeoutMs?: number;
+  json: boolean;
+  stream: boolean;
+}
+
+function parseValidateArgs(args: string[]): ValidateCliOptions {
+  const categories: CommandConfigCategory[] = [];
+  const options: ValidateCliOptions = {
+    json: false,
+    stream: false
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--build") {
+      categories.push("build");
+      continue;
+    }
+
+    if (arg === "--test") {
+      categories.push("test");
+      continue;
+    }
+
+    if (arg === "--lint") {
+      categories.push("lint");
+      continue;
+    }
+
+    if (arg === "--format") {
+      categories.push("format");
+      continue;
+    }
+
+    if (arg === "--validation") {
+      categories.push("validation");
+      continue;
+    }
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--stream") {
+      options.stream = true;
+      continue;
+    }
+
+    if (arg === "--timeout-ms") {
+      const timeoutMs = Number(args[index + 1]);
+
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error("Missing or invalid value for --timeout-ms");
+      }
+
+      options.timeoutMs = timeoutMs;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--path") {
+      const startPath = args[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown validate argument: ${arg}`);
+  }
+
+  options.categories = categories.length > 0 ? categories : undefined;
+
+  return options;
+}
+
 function parsePlanArgs(args: string[]): PlanCliOptions {
   const requestParts: string[] = [];
   const options: PlanCliOptions = {
@@ -642,6 +993,24 @@ function getPlanSummaryText(result: FeaturePlanningResult): string {
     `Plan Markdown: ${result.markdownPath}`,
     `Latest JSON: ${result.latestJsonPath}`,
     `Latest Markdown: ${result.latestMarkdownPath}`
+  ].join("\n");
+}
+
+function getValidateSummaryText(result: ValidationRunResult): string {
+  const report = result.report;
+
+  return [
+    `${PROJECT_NAME}: validate`,
+    "",
+    `Status: ${report.status}`,
+    report.summary,
+    `Commands: ${report.results.length}`,
+    `Failures: ${report.failureSummary.length}`,
+    `Validation JSON: ${report.artifactPaths.timestampJsonPath}`,
+    `Validation Markdown: ${report.artifactPaths.timestampMarkdownPath}`,
+    `Validation Logs: ${report.artifactPaths.timestampLogPath}`,
+    `Latest JSON: ${report.artifactPaths.latestJsonPath}`,
+    `Latest Markdown: ${report.artifactPaths.latestMarkdownPath}`
   ].join("\n");
 }
 

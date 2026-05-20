@@ -12,6 +12,7 @@
   "references": [
     { "path": "../core" },
     { "path": "../indexer" },
+    { "path": "../mcp-server" },
     { "path": "../planner" },
     { "path": "../shared" },
     { "path": "../validator" }

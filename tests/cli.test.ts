@@ -38,9 +38,7 @@ describe("CLI skeleton", () => {
     expect(result.exitCode).toBe(0);
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
-    expect(capture.stdout.join("\n")).toContain(
-      "Phase 8 custom command configuration is ready"
-    );
+    expect(capture.stdout.join("\n")).toContain("Phase 11 local MCP server is ready");
   });
 
   it("prints help for --help", async () => {

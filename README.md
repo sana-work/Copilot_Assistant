@@ -44,12 +44,10 @@ Runtime artifacts will live under `.copilot-architect/`.
 
 ## Current Phase
 
-Phase 8 adds custom command configuration under `.copilot-architect/commands.json`. Copilot Architect can initialize, validate, and list team-defined build/test/lint/format/validation commands:
+Phase 11 adds a local MCP server powered by the TypeScript MCP SDK. Agent hosts can start the server with stdio transport and call structured repo intelligence, search, planning-context, validation-command, safety-policy, latest-artifact, and agent-status tools:
 
 ```bash
-npm run cli -- init
-npm run cli -- commands validate
-npm run cli -- commands list
+npm run cli -- mcp
 ```
 
-Custom commands are parsed into validation plan commands and merged ahead of detected commands, with explicit override support. Phase 8 does not execute commands; safe validation execution starts in the next phase.
+Most MCP tools are read-only repo intelligence tools. `generate_feature_plan` writes plan artifacts and requires `approved=true`; impact and context tools avoid writing plan artifacts.

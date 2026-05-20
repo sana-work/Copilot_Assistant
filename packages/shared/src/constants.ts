@@ -29,6 +29,8 @@ export const CLI_COMMANDS = [
   "plan",
   "commands",
   "validate",
+  "policy",
+  "audit",
   "review",
   "handoff",
   "agents",

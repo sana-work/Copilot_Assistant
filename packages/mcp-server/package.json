@@ -10,5 +10,14 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@copilot-architect/core": "0.1.0",
+    "@copilot-architect/indexer": "0.1.0",
+    "@copilot-architect/planner": "0.1.0",
+    "@copilot-architect/shared": "0.1.0",
+    "@copilot-architect/validator": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
   }
 }

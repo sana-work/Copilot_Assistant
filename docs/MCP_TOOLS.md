@@ -6,22 +6,42 @@ MCP is a first-class integration path. The local MCP server exposes Copilot Arch
 
 ## Technology
 
-The MCP server is implemented in TypeScript and should use the MCP TypeScript SDK when the server package moves beyond the Phase 1 placeholder.
+The MCP server is implemented in TypeScript with the MCP TypeScript SDK. Start it with:
 
-## Planned Tool Families
+```bash
+npm run cli -- mcp
+```
 
-- Repo analysis tools: read workspace context, repo maps, project maps, architecture summaries, and diagnostics.
-- Search tools: query local index, find related files, and find similar feature patterns.
-- Planning tools: create feature plans, render Markdown plans, and produce validation strategies.
-- Validation tools: inspect command config, assess safety, run allowed validation commands, and summarize evidence.
-- Safety tools: evaluate command risk, inspect policy, and explain blocked commands.
-- Agent tools: list, generate, validate, install, update, and doctor custom Copilot agents.
-- Instruction tools: generate Copilot instructions, AGENTS.md suggestions, and skills.
-- Review tools: summarize git diff, compare diff to a plan, identify risks, and produce reviewer prompts.
+## Phase 11 Tools
+
+- `repo_map`
+- `workspace_map`
+- `detect_languages`
+- `detect_frameworks`
+- `detect_package_managers`
+- `detect_build_commands`
+- `detect_test_commands`
+- `search_repo`
+- `search_across_repos`
+- `find_similar_feature`
+- `find_impacted_files`
+- `analyze_impact`
+- `generate_plan_context`
+- `generate_feature_plan`
+- `get_validation_commands`
+- `get_safety_policy`
+- `get_latest_plan`
+- `get_latest_validation`
+- `get_latest_review`
+- `agent_status`
 
 ## Boundary
 
 MCP tools call shared package APIs. They do not contain separate business logic and do not bypass validation safety policy.
+
+Tools return structured JSON. Missing latest artifacts return a structured `missing` response instead of throwing opaque file errors.
+
+Read-only tools are the default. `generate_feature_plan` writes plan artifacts and requires an explicit `approved=true` argument.
 
 ## Artifacts
 

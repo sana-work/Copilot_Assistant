@@ -54,15 +54,29 @@ Status: implemented as `CommandConfigService` with categorized command parsing, 
 
 Run safe commands only, support timeouts and retries, stream output, save logs and reports, redact secrets, summarize failures, and generate fix prompts.
 
+Status: implemented as `ValidationService` with detected/custom command planning, category filters, dangerous-command blocking, safe command execution, timeout/retry support, redacted logs, JSON/Markdown reports, latest artifacts, failure summaries, fix prompts, and CLI `validate` flags.
+
 ## Phase 10 - Safety Policy And Audit
 
 Implement the safety policy engine, command risk assessment, audit logging, secret redaction, workspace boundary checks, and approval gates.
 
-## Phase 11 - Agents And Instructions
+Status: implemented as safety policy, command risk assessment, audit logging, secret redaction, path boundary, git checkpoint, and rollback guide services with CLI `policy show`, `policy validate`, and `audit list` support.
+
+## Phase 11 - Local MCP Server
+
+Implement the local MCP server and expose repo intelligence, search, planning, validation, and safety tools.
+
+Status: implemented with `packages/mcp-server`, the TypeScript MCP SDK, stdio startup through `npm run cli -- mcp`, structured JSON responses, read-only repo/search/impact/policy/latest-artifact tools, and approval-gated `generate_feature_plan`.
+
+## Phase 12 - CLI Completion
+
+Complete the CLI command surface, help text, JSON output, exit codes, and command coverage across init, analyze, index, search, plan, validate, review, handoff, agents, instructions, workspace, commands, policy, audit, mcp, serve, status, and doctor.
+
+## Phase 13 - Custom Copilot Agents
 
 Generate custom Copilot agents, Copilot instructions, AGENTS.md suggestions, skill templates, backup-before-overwrite behavior, and doctor/update commands.
 
-## Phase 12 - Review Reports
+## Phase 14 - Review Reports
 
 Generate review reports from git diff, validation evidence, plan-vs-diff comparison, risk analysis, missing-test detection, and reviewer prompts.
 

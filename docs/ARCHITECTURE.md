@@ -68,7 +68,7 @@ Expected commands include:
 
 ## MCP-First
 
-The MCP server exposes repo intelligence tools to local agent hosts. It should use the TypeScript MCP SDK and call the same package APIs as the CLI. MCP is first-class because agent hosts need structured access to repo maps, plans, validation evidence, policy checks, custom instructions, and review reports.
+The MCP server exposes repo intelligence tools to local agent hosts. It uses the TypeScript MCP SDK, connects over stdio through `npm run cli -- mcp`, and calls the same package APIs as the CLI. MCP is first-class because agent hosts need structured access to repo maps, plans, validation evidence, policy checks, custom instructions, and review reports.
 
 ## Adapter System
 
@@ -119,7 +119,29 @@ The CLI `plan` command calls `FeaturePlanningService`; it does not duplicate pla
 
 `packages/validator` owns custom command configuration for `.copilot-architect/commands.json`. `CommandConfigService` creates the template during `init`, parses categorized `build`, `test`, `lint`, `format`, and `validation` entries, validates schema errors with actionable messages, normalizes command strings into structured validation commands, and merges custom commands ahead of detected commands.
 
-The CLI `init`, `commands validate`, and `commands list` commands call `CommandConfigService`; they do not execute configured commands. Command execution, safety policy checks, logs, retries, and validation reports are handled in later validation phases.
+The CLI `init`, `commands validate`, and `commands list` commands call `CommandConfigService`.
+
+## Validation Engine
+
+`packages/validator` also owns Phase 9 validation execution. `ValidationService` builds a validation plan from repo-discovered commands and custom command config, filters by requested category, assesses command risk, runs allowed commands without a shell, supports timeouts and retries, streams redacted output, and writes validation artifacts under `.copilot-architect/runs/`.
+
+Validation artifacts include timestamped and latest JSON/Markdown reports plus timestamped logs. Reports summarize passed/failed/blocked/timed-out commands, include command risk assessments, capture failure summaries, and generate a fix prompt for failed validation.
+
+The CLI `validate`, `validate --build`, `validate --test`, `validate --lint`, and `validate --format` commands call `ValidationService`.
+
+## Safety Policy And Audit
+
+`packages/validator` owns Phase 10 safety services. `SafetyPolicyService` loads or creates `.copilot-architect/policy.json`, `CommandRiskAssessmentService` blocks dangerous commands and warns on git history mutations, `PathBoundaryService` prevents workspace escapes, `SecretRedactionService` redacts likely secrets, `AuditLogService` writes JSONL audit entries under `.copilot-architect/audit/`, `GitCheckpointService` captures current git state, and `RollbackGuideGenerator` creates human-readable rollback guidance.
+
+The CLI `policy show`, `policy validate`, and `audit list` commands call these services. Validation execution uses the same policy, risk, redaction, and audit services.
+
+## Local MCP Server
+
+`packages/mcp-server` owns the Phase 11 MCP integration. `createCopilotArchitectMcpServer` registers tools on an MCP SDK server, while `startMcpServer` attaches stdio transport for local agent hosts. The CLI `mcp` command is a thin shell around this package.
+
+The server exposes `repo_map`, `workspace_map`, language/framework/package-manager/command detection tools, repo and workspace search, similar feature lookup, impact/context generation, approval-gated feature plan generation, validation command lookup, safety policy lookup, latest plan/validation/review artifact readers, and `agent_status`.
+
+Tools return structured JSON in MCP text content and call `packages/core`, `packages/indexer`, `packages/planner`, and `packages/validator` rather than duplicating business logic. Read-only tools do not write plan artifacts; `generate_feature_plan` requires `approved=true` before it writes `.copilot-architect/plans/` artifacts.
 
 ## Artifacts
 
