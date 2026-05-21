@@ -1,18 +1,44 @@
 #!/usr/bin/env node
 
+import { access } from "node:fs/promises";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { RepoDiscoveryService } from "@copilot-architect/core";
+import {
+  AgentService,
+  type AgentInstallSummary,
+  type AgentListResult,
+  type AgentValidationResult
+} from "@copilot-architect/agents";
+import {
+  RepoDiscoveryService,
+  WorkspaceService,
+  type WorkspaceServiceResult
+} from "@copilot-architect/core";
 import {
   IndexingService,
   type IndexResult,
-  type SearchResponse
+  type SearchResponse,
+  type WorkspaceIndexResult,
+  type WorkspaceSearchResponse
 } from "@copilot-architect/indexer";
 import {
+  InstructionService,
+  type InstructionGenerationSummary,
+  type InstructionPreviewResult,
+  type InstructionValidationResult
+} from "@copilot-architect/instructions";
+import {
   FeaturePlanningService,
-  type FeaturePlanningResult
+  HandoffService,
+  WorkspacePlanningService,
+  type FeaturePlanningResult,
+  type HandoffGenerationResult,
+  type WorkspaceImpactResult,
+  type WorkspacePlanningResult
 } from "@copilot-architect/planner";
 import { startMcpServer } from "@copilot-architect/mcp-server";
+import { ReviewService, type ReviewServiceResult } from "@copilot-architect/reviewer";
 import {
   AuditLogService,
   CommandConfigService,
@@ -28,12 +54,23 @@ import {
   type ValidationRunResult
 } from "@copilot-architect/validator";
 import {
+  DEFAULT_WEB_HOST,
+  DEFAULT_WEB_PORT,
+  startWebServer,
+  type WebServerStartResult
+} from "@copilot-architect/web";
+import {
   ARTIFACT_DIRECTORY,
   CLI_COMMANDS,
   CURRENT_SCHEMA_VERSION,
   type DiagnosticReport,
   type CliCommandName,
-  PROJECT_NAME
+  PROJECT_NAME,
+  getArtifactDirectoryPath,
+  getArtifactFilePath,
+  readJsonFile,
+  type FeaturePlan,
+  type HandoffPrompt
 } from "@copilot-architect/shared";
 
 export interface CliIo {
@@ -66,6 +103,34 @@ const commandDescriptions = {
   doctor: "Run environment and project checks."
 } satisfies Record<CliCommandName, string>;
 
+const commandUsage = {
+  init: "npm run cli -- init [--path <repo>] [--overwrite] [--json]",
+  analyze: "npm run cli -- analyze [path] [--json] [--output <file>]",
+  index: "npm run cli -- index [path] [--rebuild] [--json]",
+  search: 'npm run cli -- search "query" [--path <repo>] [--limit <n>] [--json]',
+  plan: 'npm run cli -- plan "feature request" [--path <repo>] [--json]',
+  commands: "npm run cli -- commands <list|validate> [--path <repo>] [--json]",
+  validate:
+    "npm run cli -- validate [--build|--test|--lint|--format|--validation] [--path <repo>] [--json]",
+  policy: "npm run cli -- policy <show|validate> [--path <repo>] [--json]",
+  audit: "npm run cli -- audit list [--path <repo>] [--limit <n>] [--json]",
+  review:
+    "npm run cli -- review [--path <repo>] [--plan latest|<file>] [--validation latest|<file>] [--json]",
+  handoff:
+    "npm run cli -- handoff --approve [--plan latest|<file>] [--target <agent>] [--path <repo>] [--no-clipboard] [--json]",
+  agents:
+    "npm run cli -- agents <install|list|validate|update|doctor> [--path <repo>] [--output <dir|json>] [--dry-run] [--force] [--json]",
+  instructions:
+    "npm run cli -- instructions <generate|preview|validate> [--path <repo>] [--output <file>] [--json]",
+  workspace:
+    "npm run cli -- workspace <init|show|list|add|remove|index|search|impact|plan|validate-plan> [args] [--json]",
+  mcp: "npm run cli -- mcp [--path <repo>]",
+  serve:
+    "npm run cli -- serve [--path <repo>] [--host 127.0.0.1] [--port <n>] [--json]",
+  status: "npm run cli -- status [--path <repo>] [--json]",
+  doctor: "npm run cli -- doctor [--json]"
+} satisfies Record<CliCommandName, string>;
+
 export function getHelpText(): string {
   const commandLines = CLI_COMMANDS.map(
     (command) => `  ${command.padEnd(14)} ${commandDescriptions[command]}`
@@ -80,8 +145,32 @@ export function getHelpText(): string {
     "Commands:",
     ...commandLines,
     "",
-    "Phase 11 note:",
-    "  Local MCP server tools are available through `npm run cli -- mcp`."
+    "Examples:",
+    "  npm run cli -- analyze",
+    "  npm run cli -- index",
+    '  npm run cli -- search "invoice"',
+    '  npm run cli -- plan "Add invoice approval workflow"',
+    "  npm run cli -- validate --test",
+    "  npm run cli -- mcp",
+    "",
+    "Phase 19 note:",
+    "  Multi-repo workspaces support named repos, cross-repo search, plans, and validation."
+  ].join("\n");
+}
+
+export function getCommandHelpText(command: CliCommandName): string {
+  return [
+    `${PROJECT_NAME}: ${command}`,
+    "",
+    commandDescriptions[command],
+    "",
+    "Usage:",
+    `  ${commandUsage[command]}`,
+    "",
+    "Common flags:",
+    "  --json       Print structured JSON where supported.",
+    "  --path PATH  Run against a specific repo or workspace path.",
+    "  --help       Show command help."
   ].join("\n");
 }
 
@@ -110,9 +199,9 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    id: "phase-11-doctor",
+    id: "phase-15-doctor",
     status: "ok",
-    summary: "Phase 11 local MCP server is ready",
+    summary: "Phase 15 implementation handoff is ready",
     environment: {
       nodeVersion,
       packageManager: "npm",
@@ -158,8 +247,15 @@ export async function runCli(
     return { exitCode: 1 };
   }
 
+  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
+    stdout(getCommandHelpText(rawCommand));
+    return { exitCode: 0 };
+  }
+
   if (rawCommand === "doctor") {
-    stdout(getDoctorText());
+    const options = parseJsonOnlyArgs(commandArgs, "doctor");
+    const report = getDoctorReport();
+    stdout(options.json ? JSON.stringify(report, null, 2) : getDoctorText());
     return { exitCode: 0 };
   }
 
@@ -182,7 +278,12 @@ export async function runCli(
         options.startPath,
         options.overwrite ?? false
       );
-      stdout(getInitSummaryText(commandResult, policyResult));
+      const payload = { commands: commandResult, policy: policyResult };
+      stdout(
+        options.json
+          ? JSON.stringify(payload, null, 2)
+          : getInitSummaryText(commandResult, policyResult)
+      );
       return { exitCode: 0 };
     } catch (error) {
       stderr(error instanceof Error ? error.message : String(error));
@@ -288,7 +389,9 @@ export async function runCli(
     try {
       const options = parseIndexArgs(commandArgs);
       const result = await new IndexingService().index(options);
-      stdout(getIndexSummaryText(result));
+      stdout(
+        options.json ? JSON.stringify(result, null, 2) : getIndexSummaryText(result)
+      );
       return { exitCode: 0 };
     } catch (error) {
       stderr(error instanceof Error ? error.message : String(error));
@@ -349,7 +452,102 @@ export async function runCli(
     }
   }
 
-  stdout(getPlaceholderText(rawCommand, commandArgs));
+  if (rawCommand === "review") {
+    try {
+      const options = parseReviewArgs(commandArgs);
+      const result = await new ReviewService().review(options);
+      stdout(
+        options.json ? JSON.stringify(result.report, null, 2) : getReviewText(result)
+      );
+      return { exitCode: 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "handoff") {
+    try {
+      const options = parseHandoffArgs(commandArgs);
+      const result = await new HandoffService().generate(options);
+      stdout(options.json ? JSON.stringify(result, null, 2) : getHandoffText(result));
+      return { exitCode: 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "agents") {
+    try {
+      const options = parseAgentsArgs(commandArgs);
+      const result = await runAgentsCommand(options);
+      stdout(options.json ? JSON.stringify(result.payload, null, 2) : result.text);
+      return { exitCode: result.exitCode };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "instructions") {
+    try {
+      const options = parseInstructionsArgs(commandArgs);
+      const result = await runInstructionsCommand(options);
+      stdout(options.json ? JSON.stringify(result.payload, null, 2) : result.text);
+      return { exitCode: result.exitCode };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "workspace") {
+    try {
+      const options = parseWorkspaceArgs(commandArgs);
+      const result = await runWorkspaceCommand(options);
+      stdout(options.json ? JSON.stringify(result.payload, null, 2) : result.text);
+      return { exitCode: result.exitCode };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "serve") {
+    try {
+      const options = parseServeArgs(commandArgs);
+      const server = await startWebServer({
+        startPath: options.startPath,
+        host: options.host,
+        port: options.port
+      });
+      stdout(
+        options.json
+          ? JSON.stringify(getServePayload(server), null, 2)
+          : getServeText(server)
+      );
+      await waitForServeShutdown(server);
+      return { exitCode: 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "status") {
+    try {
+      const options = parseStatusArgs(commandArgs);
+      const result = await getStatus(options);
+      stdout(options.json ? JSON.stringify(result, null, 2) : getStatusText(result));
+      return { exitCode: 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  stdout(getCommandHelpText(rawCommand));
   return { exitCode: 0 };
 }
 
@@ -362,10 +560,30 @@ interface AnalyzeCliOptions {
 interface InitCliOptions {
   startPath?: string;
   overwrite?: boolean;
+  json: boolean;
 }
 
 interface McpCliOptions {
   startPath?: string;
+}
+
+interface JsonOnlyCliOptions {
+  json: boolean;
+}
+
+function parseJsonOnlyArgs(args: string[], command: string): JsonOnlyCliOptions {
+  const options: JsonOnlyCliOptions = { json: false };
+
+  for (const arg of args) {
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    throw new Error(`Unknown ${command} argument: ${arg}`);
+  }
+
+  return options;
 }
 
 function parseMcpArgs(args: string[]): McpCliOptions {
@@ -393,10 +611,15 @@ function parseMcpArgs(args: string[]): McpCliOptions {
 }
 
 function parseInitArgs(args: string[]): InitCliOptions {
-  const options: InitCliOptions = {};
+  const options: InitCliOptions = { json: false };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
 
     if (arg === "--overwrite") {
       options.overwrite = true;
@@ -591,6 +814,18 @@ function parseAnalyzeArgs(args: string[]): AnalyzeCliOptions {
       continue;
     }
 
+    if (arg === "--path") {
+      const startPath = args[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
+      continue;
+    }
+
     if (!arg.startsWith("-") && !options.startPath) {
       options.startPath = arg;
       continue;
@@ -729,14 +964,34 @@ function getAuditListText(result: AuditListResult): string {
 interface IndexCliOptions {
   startPath?: string;
   rebuild?: boolean;
+  json: boolean;
 }
 
 function parseIndexArgs(args: string[]): IndexCliOptions {
-  const options: IndexCliOptions = {};
+  const options: IndexCliOptions = { json: false };
 
-  for (const arg of args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
     if (arg === "--rebuild") {
       options.rebuild = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      const startPath = args[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
       continue;
     }
 
@@ -1014,19 +1269,1098 @@ function getValidateSummaryText(result: ValidationRunResult): string {
   ].join("\n");
 }
 
-function isCliCommand(value: string): value is CliCommandName {
-  return CLI_COMMANDS.includes(value as CliCommandName);
+interface ReviewCliOptions {
+  startPath?: string;
+  plan?: string;
+  validation?: string;
+  json: boolean;
 }
 
-function getPlaceholderText(command: CliCommandName, args: string[]): string {
-  const argText = args.length > 0 ? ` Args: ${args.join(" ")}` : "";
+interface HandoffCliOptions {
+  startPath?: string;
+  plan?: string;
+  approved?: boolean;
+  targetAgent?: HandoffPrompt["targetAgent"];
+  copyToClipboard?: boolean;
+  json: boolean;
+}
+
+interface AgentsCliOptions {
+  subcommand: "install" | "list" | "validate" | "update" | "doctor";
+  startPath?: string;
+  outputPath?: string;
+  dryRun?: boolean;
+  force?: boolean;
+  json: boolean;
+}
+
+interface InstructionsCliOptions {
+  subcommand: "generate" | "preview" | "validate";
+  startPath?: string;
+  outputPath?: string;
+  json: boolean;
+}
+
+interface WorkspaceCliOptions {
+  subcommand:
+    | "init"
+    | "show"
+    | "list"
+    | "add"
+    | "remove"
+    | "index"
+    | "search"
+    | "impact"
+    | "plan"
+    | "validate-plan";
+  startPath?: string;
+  workspaceName?: string;
+  repoName?: string;
+  repoPath?: string;
+  role?: string;
+  query?: string;
+  request?: string;
+  plan?: string;
+  rebuild?: boolean;
+  limit?: number;
+  json: boolean;
+}
+
+interface StatusCliOptions {
+  startPath?: string;
+  json: boolean;
+}
+
+interface ServeCliOptions {
+  startPath?: string;
+  host?: string;
+  port?: number;
+  json: boolean;
+}
+
+interface CliCommandExecutionResult {
+  exitCode: number;
+  text: string;
+  payload: unknown;
+}
+
+function parseReviewArgs(args: string[]): ReviewCliOptions {
+  const options: ReviewCliOptions = { json: false };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(args, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--plan") {
+      options.plan = requiredValue(args, index, "--plan");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--validation") {
+      options.validation = requiredValue(args, index, "--validation");
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown review argument: ${arg}`);
+  }
+
+  return options;
+}
+
+function parseServeArgs(args: string[]): ServeCliOptions {
+  const options: ServeCliOptions = { json: false };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(args, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--host") {
+      options.host = requiredValue(args, index, "--host");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--port") {
+      options.port = parsePositiveInteger(
+        requiredValue(args, index, "--port"),
+        "--port"
+      );
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown serve argument: ${arg}`);
+  }
+
+  return options;
+}
+
+function parseHandoffArgs(args: string[]): HandoffCliOptions {
+  const options: HandoffCliOptions = { json: false };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--approve" || arg === "--approved") {
+      options.approved = true;
+      continue;
+    }
+
+    if (arg === "--no-clipboard") {
+      options.copyToClipboard = false;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(args, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--plan") {
+      options.plan = requiredValue(args, index, "--plan");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--target") {
+      options.targetAgent = parseTargetAgent(requiredValue(args, index, "--target"));
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown handoff argument: ${arg}`);
+  }
+
+  return options;
+}
+
+function parseAgentsArgs(args: string[]): AgentsCliOptions {
+  const [subcommand, ...rest] = args;
+
+  if (
+    subcommand !== "install" &&
+    subcommand !== "list" &&
+    subcommand !== "validate" &&
+    subcommand !== "update" &&
+    subcommand !== "doctor"
+  ) {
+    throw new Error(
+      "Expected agents subcommand: install, list, validate, update, or doctor"
+    );
+  }
+
+  const options: AgentsCliOptions = { subcommand, json: false };
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--dry-run") {
+      options.dryRun = true;
+      continue;
+    }
+
+    if (arg === "--force") {
+      options.force = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(rest, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--output") {
+      const output = requiredValue(rest, index, "--output");
+
+      if (output === "json") {
+        options.json = true;
+      } else {
+        options.outputPath = output;
+      }
+
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown agents argument: ${arg}`);
+  }
+
+  return options;
+}
+
+function parseInstructionsArgs(args: string[]): InstructionsCliOptions {
+  const [subcommand, ...rest] = args;
+
+  if (
+    subcommand !== "generate" &&
+    subcommand !== "preview" &&
+    subcommand !== "validate"
+  ) {
+    throw new Error("Expected instructions subcommand: generate, preview, or validate");
+  }
+
+  const options: InstructionsCliOptions = { subcommand, json: false };
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(rest, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--output") {
+      options.outputPath = requiredValue(rest, index, "--output");
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown instructions argument: ${arg}`);
+  }
+
+  return options;
+}
+
+function parseWorkspaceArgs(args: string[]): WorkspaceCliOptions {
+  const [subcommand, ...rest] = args;
+
+  if (!isWorkspaceSubcommand(subcommand)) {
+    throw new Error(
+      "Expected workspace subcommand: init, show, list, add, remove, index, search, impact, plan, or validate-plan"
+    );
+  }
+
+  const options: WorkspaceCliOptions = { subcommand, json: false };
+  const textParts: string[] = [];
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--rebuild") {
+      options.rebuild = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(rest, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--repo") {
+      options.repoPath = requiredValue(rest, index, "--repo");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--name") {
+      options.workspaceName = requiredValue(rest, index, "--name");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--role") {
+      options.role = requiredValue(rest, index, "--role");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--plan") {
+      options.plan = requiredValue(rest, index, "--plan");
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--limit") {
+      options.limit = Number(requiredValue(rest, index, "--limit"));
+
+      if (!Number.isFinite(options.limit) || options.limit <= 0) {
+        throw new Error("Missing or invalid value for --limit");
+      }
+
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown workspace argument: ${arg}`);
+    }
+
+    textParts.push(arg);
+  }
+
+  if (options.subcommand === "add" && !options.repoPath) {
+    if (textParts.length >= 2) {
+      options.repoName = textParts.shift();
+      options.repoPath = textParts.shift();
+    } else {
+      options.repoPath = textParts.shift();
+    }
+  }
+
+  if (options.subcommand === "add" && options.repoPath && !options.repoName) {
+    options.repoName = textParts.shift();
+  }
+
+  if (options.subcommand === "remove") {
+    options.repoName = textParts.join(" ").trim() || options.repoPath;
+  }
+
+  if (options.subcommand === "init" && !options.workspaceName) {
+    options.workspaceName = textParts.join(" ").trim() || undefined;
+  }
+
+  if (options.subcommand === "search") {
+    options.query = textParts.join(" ").trim();
+  }
+
+  if (options.subcommand === "impact" || options.subcommand === "plan") {
+    options.request = textParts.join(" ").trim();
+  }
+
+  return options;
+}
+
+function parseStatusArgs(args: string[]): StatusCliOptions {
+  const options: StatusCliOptions = { json: false };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--path") {
+      options.startPath = requiredValue(args, index, "--path");
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown status argument: ${arg}`);
+  }
+
+  return options;
+}
+
+async function runAgentsCommand(
+  options: AgentsCliOptions
+): Promise<CliCommandExecutionResult> {
+  const service = new AgentService();
+
+  if (options.subcommand === "install") {
+    const result = await service.install({
+      startPath: options.startPath,
+      outputPath: options.outputPath,
+      dryRun: options.dryRun,
+      force: options.force
+    });
+    return {
+      exitCode: result.results.some((entry) => entry.status === "failed") ? 1 : 0,
+      payload: result,
+      text: getAgentInstallText(result)
+    };
+  }
+
+  if (options.subcommand === "update") {
+    const result = await service.update({
+      startPath: options.startPath,
+      outputPath: options.outputPath,
+      dryRun: options.dryRun,
+      force: options.force
+    });
+    return {
+      exitCode: result.results.some((entry) => entry.status === "failed") ? 1 : 0,
+      payload: result,
+      text: getAgentInstallText(result)
+    };
+  }
+
+  if (options.subcommand === "list") {
+    const result = service.list();
+    return { exitCode: 0, payload: result, text: getAgentListText(result) };
+  }
+
+  if (options.subcommand === "validate") {
+    const result = await service.validate({
+      startPath: options.startPath,
+      outputPath: options.outputPath
+    });
+    return {
+      exitCode: result.ok ? 0 : 1,
+      payload: result,
+      text: getAgentValidateText(result)
+    };
+  }
+
+  const result = service.doctor();
+  return {
+    exitCode: 0,
+    payload: result,
+    text: getDiagnosticReportText("agents doctor", result)
+  };
+}
+
+async function runInstructionsCommand(
+  options: InstructionsCliOptions
+): Promise<CliCommandExecutionResult> {
+  const service = new InstructionService();
+
+  if (options.subcommand === "preview") {
+    const result = await service.preview({
+      startPath: options.startPath,
+      outputPath: options.outputPath
+    });
+    return { exitCode: 0, payload: result, text: getInstructionPreviewText(result) };
+  }
+
+  if (options.subcommand === "generate") {
+    const result = await service.generate({
+      startPath: options.startPath,
+      outputPath: options.outputPath
+    });
+    return {
+      exitCode: result.status === "failed" ? 1 : 0,
+      payload: result,
+      text: getInstructionGenerateText(result)
+    };
+  }
+
+  const result = await service.validate({
+    startPath: options.startPath,
+    outputPath: options.outputPath
+  });
+  return {
+    exitCode: result.ok ? 0 : 1,
+    payload: result,
+    text: getInstructionValidateText(result)
+  };
+}
+
+async function runWorkspaceCommand(
+  options: WorkspaceCliOptions
+): Promise<CliCommandExecutionResult> {
+  const service = new WorkspaceService();
+
+  if (options.subcommand === "init") {
+    const result = await service.init({
+      startPath: options.startPath,
+      workspaceName: options.workspaceName
+    });
+    return {
+      exitCode: 0,
+      payload: result.workspace,
+      text: getWorkspaceText("init", result)
+    };
+  }
+
+  if (options.subcommand === "show" || options.subcommand === "list") {
+    const result = await service.show({ startPath: options.startPath });
+    return {
+      exitCode: 0,
+      payload: result.workspace,
+      text: getWorkspaceText(options.subcommand, result)
+    };
+  }
+
+  if (options.subcommand === "add") {
+    if (!options.repoPath) {
+      throw new Error("workspace add requires a repo path");
+    }
+
+    const result = await service.add({
+      startPath: options.startPath,
+      name: options.repoName,
+      repoPath: options.repoPath,
+      role: options.role
+    });
+    return {
+      exitCode: 0,
+      payload: result.workspace,
+      text: getWorkspaceText("add", result)
+    };
+  }
+
+  if (options.subcommand === "remove") {
+    if (!options.repoName) {
+      throw new Error("workspace remove requires a repo name or path");
+    }
+
+    const result = await service.remove({
+      startPath: options.startPath,
+      nameOrPath: options.repoName
+    });
+    return {
+      exitCode: 0,
+      payload: result.workspace,
+      text: getWorkspaceText("remove", result)
+    };
+  }
+
+  if (options.subcommand === "index") {
+    const payload = await new IndexingService().indexWorkspace({
+      startPath: options.startPath,
+      rebuild: options.rebuild
+    });
+    return {
+      exitCode: 0,
+      payload,
+      text: getWorkspaceIndexText(payload)
+    };
+  }
+
+  if (options.subcommand === "search") {
+    if (!options.query) {
+      throw new Error("workspace search requires a query");
+    }
+
+    const payload = await new IndexingService().searchWorkspace({
+      startPath: options.startPath,
+      query: options.query,
+      limit: options.limit
+    });
+    return {
+      exitCode: 0,
+      payload,
+      text: getWorkspaceSearchText(payload)
+    };
+  }
+
+  if (options.subcommand === "impact") {
+    if (!options.request) {
+      throw new Error("workspace impact requires a request");
+    }
+
+    const impact = await new WorkspacePlanningService().analyzeImpact({
+      startPath: options.startPath,
+      request: options.request,
+      searchLimit: options.limit
+    });
+    return {
+      exitCode: 0,
+      payload: impact,
+      text: getWorkspaceImpactText(impact)
+    };
+  }
+
+  if (options.subcommand === "plan") {
+    if (!options.request) {
+      throw new Error("workspace plan requires a request");
+    }
+
+    const plan = await new WorkspacePlanningService().createPlan({
+      startPath: options.startPath,
+      request: options.request,
+      searchLimit: options.limit
+    });
+    return { exitCode: 0, payload: plan, text: getWorkspacePlanText(plan) };
+  }
+
+  const validation = await validateWorkspacePlan(options);
+  return {
+    exitCode: validation.ok ? 0 : 1,
+    payload: validation,
+    text: getWorkspaceValidatePlanText(validation)
+  };
+}
+
+function getReviewText(result: ReviewServiceResult): string {
   return [
-    `${PROJECT_NAME}: ${command}`,
+    `${PROJECT_NAME}: review`,
     "",
-    `${commandDescriptions[command]}`,
-    "",
-    `Phase 7 placeholder registered. ${argText}`.trimEnd()
+    result.report.summary,
+    `Findings: ${result.report.findings.length}`,
+    `Unexpected files: ${result.report.unexpectedFiles.length}`,
+    `Missing tests: ${result.report.missingTests.length}`,
+    `Validation: ${result.report.validationStatus ?? "not available"}`,
+    `Risks: ${result.report.risks.length}`,
+    `Review JSON: ${result.jsonPath}`,
+    `Review Markdown: ${result.markdownPath}`,
+    `Latest JSON: ${result.latestJsonPath}`,
+    `Latest Markdown: ${result.latestMarkdownPath}`
   ].join("\n");
+}
+
+function getHandoffText(result: HandoffGenerationResult): string {
+  return [
+    `${PROJECT_NAME}: handoff`,
+    "",
+    `Plan: ${result.handoff.planId}`,
+    `Target agent: ${result.handoff.targetAgent}`,
+    `Expected files: ${result.handoff.expectedFiles.length}`,
+    `Validation commands: ${result.handoff.validationCommands.length}`,
+    `Git checkpoint: ${result.gitCheckpoint.created ? result.gitCheckpoint.checkpointPath : result.gitCheckpoint.message}`,
+    `Clipboard: ${result.clipboard.copied ? "copied" : result.clipboard.message}`,
+    `Handoff JSON: ${result.jsonPath}`,
+    `Handoff Markdown: ${result.markdownPath}`,
+    `Latest JSON: ${result.latestJsonPath}`,
+    `Latest Markdown: ${result.latestMarkdownPath}`
+  ].join("\n");
+}
+
+function getAgentInstallText(result: AgentInstallSummary): string {
+  const counts = {
+    installed: result.results.filter((entry) => entry.status === "installed").length,
+    updated: result.results.filter((entry) => entry.status === "updated").length,
+    skipped: result.results.filter((entry) => entry.status === "skipped").length,
+    failed: result.results.filter((entry) => entry.status === "failed").length
+  };
+
+  return [
+    `${PROJECT_NAME}: agents install`,
+    "",
+    `Output: ${result.outputDirectory}`,
+    `Dry run: ${result.dryRun ? "yes" : "no"}`,
+    `Installed: ${counts.installed}`,
+    `Updated: ${counts.updated}`,
+    `Skipped: ${counts.skipped}`,
+    `Failed: ${counts.failed}`,
+    ...result.results.flatMap((entry) => [
+      "",
+      `${entry.status}: ${entry.agentId}`,
+      `  ${entry.installPath ?? "not written"}`,
+      ...(entry.backupPath ? [`  backup: ${entry.backupPath}`] : []),
+      ...entry.messages.map((message) => `  - ${message}`)
+    ])
+  ].join("\n");
+}
+
+function getAgentListText(result: AgentListResult): string {
+  return [
+    `${PROJECT_NAME}: agents list`,
+    "",
+    `Templates: ${result.templates.length}`,
+    ...result.templates.map((template) => `- ${template.name} (${template.target})`)
+  ].join("\n");
+}
+
+function getAgentValidateText(result: AgentValidationResult): string {
+  return [
+    `${PROJECT_NAME}: agents validate`,
+    "",
+    `Status: ${result.ok ? "ok" : "error"}`,
+    `Checked: ${result.checkedPath}`,
+    ...result.messages.map((message) => `- ${message}`),
+    ...result.files.flatMap((file) => [
+      "",
+      `${file.ok ? "ok" : "error"}: ${file.filePath}`,
+      ...file.errors.map((error) => `  - ${error}`),
+      ...file.warnings.map((warning) => `  - warning: ${warning}`)
+    ])
+  ].join("\n");
+}
+
+function getInstructionPreviewText(result: InstructionPreviewResult): string {
+  return [`${PROJECT_NAME}: instructions preview`, "", result.markdown].join("\n");
+}
+
+function getInstructionGenerateText(result: InstructionGenerationSummary): string {
+  return [
+    `${PROJECT_NAME}: instructions generate`,
+    "",
+    `Status: ${result.status}`,
+    `Output: ${result.outputPath ?? "not written"}`,
+    `Backup: ${result.backupPath ?? "none"}`,
+    `Skills: ${result.skills.length}`,
+    `Preserved user content: ${result.preservedUserContent ? "yes" : "no"}`,
+    ...result.skills.map(
+      (skill) =>
+        `- ${skill.id}: ${skill.status} ${skill.outputPath}${skill.backupPath ? ` (backup: ${skill.backupPath})` : ""}`
+    ),
+    ...result.messages.map((message) => `- ${message}`)
+  ].join("\n");
+}
+
+function getInstructionValidateText(result: InstructionValidationResult): string {
+  return [
+    `${PROJECT_NAME}: instructions validate`,
+    "",
+    `Status: ${result.ok ? "ok" : "error"}`,
+    `Checked: ${result.checkedPath}`,
+    `Skills: ${result.skillsPath}`,
+    ...result.messages.map((message) => `- ${message}`),
+    ...result.files.flatMap((file) => [
+      "",
+      `${file.ok ? "ok" : "error"}: ${file.filePath}`,
+      ...file.errors.map((error) => `  - ${error}`),
+      ...file.warnings.map((warning) => `  - warning: ${warning}`)
+    ])
+  ].join("\n");
+}
+
+function getWorkspaceText(subcommand: string, result: WorkspaceServiceResult): string {
+  const repos = result.workspace.repos ?? [];
+  return [
+    `${PROJECT_NAME}: workspace ${subcommand}`,
+    "",
+    `Name: ${result.workspace.workspaceName ?? path.basename(result.workspace.workspaceRoot)}`,
+    `Workspace: ${result.workspace.workspaceRoot}`,
+    `Repos: ${repos.length || result.workspace.repoRoots.length}`,
+    `Workspace file: ${result.workspacePath}`,
+    `Created: ${result.created ? "yes" : "no"}`,
+    ...repos.map(
+      (repo) => `- ${repo.name}: ${repo.path}${repo.role ? ` (${repo.role})` : ""}`
+    )
+  ].join("\n");
+}
+
+function getWorkspaceIndexText(result: WorkspaceIndexResult): string {
+  return [
+    `${PROJECT_NAME}: workspace index`,
+    "",
+    `Workspace: ${result.workspace.workspaceRoot}`,
+    `Repos indexed: ${result.results.length}`,
+    `Workspace repo-map: ${result.repoMapPath}`,
+    `Documents: ${result.results.reduce((sum, entry) => sum + entry.result.index.stats.documentCount, 0)}`,
+    ...result.results.map(
+      (entry) =>
+        `- ${entry.repo.name}: ${entry.result.index.stats.documentCount} document(s)`
+    )
+  ].join("\n");
+}
+
+function getWorkspaceSearchText(response: WorkspaceSearchResponse): string {
+  const lines = [
+    `${PROJECT_NAME}: workspace search`,
+    "",
+    `Query: ${response.query}`,
+    `Repos searched: ${response.repos.length}`,
+    `Results: ${response.combinedResults.length}`
+  ];
+
+  for (const result of response.combinedResults.slice(0, 10)) {
+    lines.push(
+      "",
+      `${result.repoName}: ${result.relativePath} (score ${result.score})`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function getWorkspaceImpactText(impact: WorkspaceImpactResult): string {
+  return [
+    `${PROJECT_NAME}: workspace impact`,
+    "",
+    `Workspace: ${impact.workspaceName ?? impact.workspaceRoot}`,
+    `Repos: ${impact.repos.length}`,
+    `Impacted repos: ${impact.impactedRepos.length}`,
+    ...impact.impactedRepos.map(
+      (repo) =>
+        `- ${repo.name}${repo.role ? ` (${repo.role})` : ""}: ${repo.resultCount} match(es), top files ${repo.topFiles.join(", ") || "none"}`
+    ),
+    `Validation plans: ${impact.perRepoValidationPlans.length}`
+  ].join("\n");
+}
+
+function getWorkspacePlanText(result: WorkspacePlanningResult): string {
+  return [
+    getPlanSummaryText(result),
+    "",
+    "Multi-repo:",
+    `Impacted repos: ${result.multiRepo.impactedRepos.length}`,
+    ...result.multiRepo.impactedRepos.map(
+      (repo) =>
+        `- ${repo.name}${repo.role ? ` (${repo.role})` : ""}: ${repo.resultCount} match(es)`
+    ),
+    `Per-repo validation plans: ${result.multiRepo.perRepoValidationPlans.length}`
+  ].join("\n");
+}
+
+function getWorkspaceValidatePlanText(result: {
+  ok: boolean;
+  planPath: string;
+  messages: string[];
+}): string {
+  return [
+    `${PROJECT_NAME}: workspace validate-plan`,
+    "",
+    `Status: ${result.ok ? "ok" : "error"}`,
+    `Plan: ${result.planPath}`,
+    ...result.messages.map((message) => `- ${message}`)
+  ].join("\n");
+}
+
+function getDiagnosticReportText(label: string, report: DiagnosticReport): string {
+  return [
+    `${PROJECT_NAME}: ${label}`,
+    "",
+    `Status: ${report.status}`,
+    report.summary,
+    ...report.checks.map(
+      (check) => `- ${check.name}: ${check.status} - ${check.message}`
+    )
+  ].join("\n");
+}
+
+async function validateWorkspacePlan(options: WorkspaceCliOptions): Promise<{
+  ok: boolean;
+  planPath: string;
+  messages: string[];
+  perRepoValidationPlans: WorkspaceImpactResult["perRepoValidationPlans"];
+}> {
+  const repoRoot = path.resolve(options.startPath ?? process.cwd());
+  const planPath =
+    !options.plan || options.plan === "latest"
+      ? path.join(getArtifactDirectoryPath(repoRoot, "plans"), "latest-plan.json")
+      : path.isAbsolute(options.plan)
+        ? options.plan
+        : path.resolve(repoRoot, options.plan);
+
+  try {
+    const plan = await readJsonFile<
+      FeaturePlan & {
+        multiRepo?: {
+          perRepoValidationPlans?: WorkspaceImpactResult["perRepoValidationPlans"];
+          impactedRepos?: WorkspaceImpactResult["impactedRepos"];
+        };
+      }
+    >(planPath);
+    const perRepoValidationPlans =
+      plan.multiRepo?.perRepoValidationPlans ??
+      (
+        await new WorkspacePlanningService().analyzeImpact({
+          startPath: repoRoot,
+          request: plan.task || plan.title
+        })
+      ).perRepoValidationPlans;
+    const messages = [
+      `Plan ${plan.id} has ${plan.implementationSteps.length} implementation step(s).`,
+      `Validation commands: ${plan.validationPlan.commands.length}.`,
+      `Requires approval: ${plan.requiresHumanApproval ? "yes" : "no"}.`,
+      `Impacted repos: ${plan.multiRepo?.impactedRepos?.length ?? 0}.`,
+      `Per-repo validation plans: ${perRepoValidationPlans.length}.`,
+      ...perRepoValidationPlans.map(
+        (repoPlan) =>
+          `${repoPlan.repoName}: ${repoPlan.commands.length} validation command(s).`
+      )
+    ];
+    const ok =
+      plan.implementationSteps.length > 0 && plan.validationPlan.commands.length >= 0;
+
+    return { ok, planPath, messages, perRepoValidationPlans };
+  } catch {
+    return {
+      ok: false,
+      planPath,
+      messages: ["Plan artifact is missing or unreadable."],
+      perRepoValidationPlans: []
+    };
+  }
+}
+
+async function getStatus(options: StatusCliOptions): Promise<{
+  workspaceRoot: string;
+  artifactRoot: string;
+  artifacts: Array<{ name: string; path: string; exists: boolean }>;
+}> {
+  const workspaceRoot = path.resolve(options.startPath ?? process.cwd());
+  const artifactRoot = path.join(workspaceRoot, ARTIFACT_DIRECTORY);
+  const artifacts = [
+    { name: "repo-map", path: getArtifactFilePath(workspaceRoot, "repoMap") },
+    { name: "workspace", path: getArtifactFilePath(workspaceRoot, "workspace") },
+    { name: "commands", path: getArtifactFilePath(workspaceRoot, "commands") },
+    { name: "policy", path: getArtifactFilePath(workspaceRoot, "policy") },
+    {
+      name: "index",
+      path: path.join(getArtifactDirectoryPath(workspaceRoot, "index"), "index.json")
+    },
+    {
+      name: "latest-plan",
+      path: path.join(
+        getArtifactDirectoryPath(workspaceRoot, "plans"),
+        "latest-plan.json"
+      )
+    },
+    {
+      name: "latest-validation",
+      path: path.join(
+        getArtifactDirectoryPath(workspaceRoot, "runs"),
+        "latest-validation.json"
+      )
+    },
+    {
+      name: "latest-review",
+      path: path.join(
+        getArtifactDirectoryPath(workspaceRoot, "reviews"),
+        "latest-review.json"
+      )
+    }
+  ];
+
+  return {
+    workspaceRoot,
+    artifactRoot,
+    artifacts: await Promise.all(
+      artifacts.map(async (artifact) => ({
+        ...artifact,
+        exists: await pathExists(artifact.path)
+      }))
+    )
+  };
+}
+
+function getStatusText(result: Awaited<ReturnType<typeof getStatus>>): string {
+  return [
+    `${PROJECT_NAME}: status`,
+    "",
+    `Workspace: ${result.workspaceRoot}`,
+    `Artifact root: ${result.artifactRoot}`,
+    "",
+    "Artifacts:",
+    ...result.artifacts.map(
+      (artifact) => `- ${artifact.name}: ${artifact.exists ? "present" : "missing"}`
+    )
+  ].join("\n");
+}
+
+function getServePayload(server: WebServerStartResult): Record<string, unknown> {
+  return {
+    status: "started",
+    url: server.url,
+    host: server.host,
+    port: server.port,
+    repoRoot: server.repoRoot,
+    localOnly: true,
+    defaultHost: DEFAULT_WEB_HOST,
+    defaultPort: DEFAULT_WEB_PORT
+  };
+}
+
+function getServeText(server: WebServerStartResult): string {
+  return [
+    `${PROJECT_NAME}: serve`,
+    "",
+    `URL: ${server.url}`,
+    `Repo: ${server.repoRoot}`,
+    `Host: ${server.host}`,
+    `Port: ${server.port}`,
+    "Scope: local-only",
+    "",
+    "Press Ctrl+C to stop."
+  ].join("\n");
+}
+
+async function waitForServeShutdown(server: WebServerStartResult): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const shutdown = (): void => {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      void server.close().finally(resolve);
+    };
+
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}
+
+function parseTargetAgent(value: string): HandoffPrompt["targetAgent"] {
+  if (
+    value === "copilot" ||
+    value === "codex" ||
+    value === "claude-code" ||
+    value === "generic"
+  ) {
+    return value;
+  }
+
+  throw new Error("Expected --target to be copilot, codex, claude-code, or generic");
+}
+
+function isWorkspaceSubcommand(
+  value: string | undefined
+): value is WorkspaceCliOptions["subcommand"] {
+  return (
+    value === "init" ||
+    value === "show" ||
+    value === "list" ||
+    value === "add" ||
+    value === "remove" ||
+    value === "index" ||
+    value === "search" ||
+    value === "impact" ||
+    value === "plan" ||
+    value === "validate-plan"
+  );
+}
+
+function requiredValue(args: string[], index: number, flag: string): string {
+  const value = args[index + 1];
+
+  if (!value) {
+    throw new Error(`Missing value for ${flag}`);
+  }
+
+  return value;
+}
+
+function parsePositiveInteger(value: string, flag: string): number {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${flag} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCliCommand(value: string): value is CliCommandName {
+  return CLI_COMMANDS.includes(value as CliCommandName);
 }
 
 function isDirectRun(): boolean {

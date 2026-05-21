@@ -1,6 +1,11 @@
-import type { FeaturePlan, ValidationCommand } from "@copilot-architect/shared";
+import type {
+  DetectedCommand,
+  FeaturePlan,
+  ValidationCommand
+} from "@copilot-architect/shared";
+import type { WorkspaceRepoDescriptor } from "@copilot-architect/core";
 
-import type { SearchResult } from "@copilot-architect/indexer";
+import type { SearchResult, WorkspaceSearchResult } from "@copilot-architect/indexer";
 
 export interface FeaturePlanningOptions {
   request: string;
@@ -46,6 +51,7 @@ export interface FeaturePlanArtifact extends FeaturePlan {
   openQuestions: string[];
   humanApprovalCheckpoint: string;
   stackSpecificPlan: StackSpecificPlan;
+  multiRepo?: WorkspacePlanSummary;
 }
 
 export interface PlanFileReference {
@@ -79,4 +85,44 @@ export interface PlanArtifactPaths {
 export interface ValidationCommandCandidate {
   command: ValidationCommand;
   label: string;
+}
+
+export type WorkspacePlanningOptions = FeaturePlanningOptions;
+
+export interface WorkspaceImpactResult {
+  request: string;
+  workspaceName?: string;
+  workspaceRoot: string;
+  repos: WorkspaceRepoDescriptor[];
+  impactedRepos: WorkspaceImpactedRepo[];
+  perRepoValidationPlans: WorkspaceRepoValidationPlan[];
+}
+
+export interface WorkspaceImpactedRepo {
+  name: string;
+  role?: string;
+  repoRoot: string;
+  resultCount: number;
+  topScore: number;
+  topFiles: string[];
+}
+
+export interface WorkspaceRepoValidationPlan {
+  repoName: string;
+  repoRole?: string;
+  repoRoot: string;
+  commands: DetectedCommand[];
+  strategy: string;
+}
+
+export interface WorkspacePlanSummary extends WorkspaceImpactResult {
+  searchResults: WorkspaceSearchResult[];
+}
+
+export interface WorkspacePlanningResult extends FeaturePlanningResult {
+  multiRepo: WorkspacePlanSummary;
+}
+
+export interface WorkspacePlanPreviewResult extends FeaturePlanPreviewResult {
+  multiRepo: WorkspacePlanSummary;
 }

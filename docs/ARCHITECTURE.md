@@ -66,6 +66,8 @@ Expected commands include:
 - `status`
 - `doctor`
 
+Phase 12 completes the CLI shell with per-command help, JSON output for automation, human-readable defaults, non-zero exit codes for validation or configuration failures, and cross-platform path parsing through Node `path` helpers. Commands that need behavior beyond argument parsing call package services instead of embedding domain logic in `packages/cli`.
+
 ## MCP-First
 
 The MCP server exposes repo intelligence tools to local agent hosts. It uses the TypeScript MCP SDK, connects over stdio through `npm run cli -- mcp`, and calls the same package APIs as the CLI. MCP is first-class because agent hosts need structured access to repo maps, plans, validation evidence, policy checks, custom instructions, and review reports.
@@ -142,6 +144,67 @@ The CLI `policy show`, `policy validate`, and `audit list` commands call these s
 The server exposes `repo_map`, `workspace_map`, language/framework/package-manager/command detection tools, repo and workspace search, similar feature lookup, impact/context generation, approval-gated feature plan generation, validation command lookup, safety policy lookup, latest plan/validation/review artifact readers, and `agent_status`.
 
 Tools return structured JSON in MCP text content and call `packages/core`, `packages/indexer`, `packages/planner`, and `packages/validator` rather than duplicating business logic. Read-only tools do not write plan artifacts; `generate_feature_plan` requires `approved=true` before it writes `.copilot-architect/plans/` artifacts.
+
+## CLI Completion Services
+
+Phase 12 adds small package-owned services for command families that were previously placeholders:
+
+- `WorkspaceService` in `packages/core` owns `workspace init`, `workspace show`, and `workspace add` artifacts.
+- `HandoffService` in `packages/planner` owns approval-gated handoff prompt generation under `.copilot-architect/handoffs/`.
+- `ReviewService` in `packages/reviewer` owns initial git-diff review report artifacts under `.copilot-architect/reviews/`.
+- `InstructionService` in `packages/instructions` owns preview, generation, validation, and backup behavior for instruction artifacts.
+
+Workspace `index`, `search`, `impact`, `plan`, and `validate-plan` commands orchestrate existing indexer/planner services across workspace config. The optional `serve` command is intentionally a thin status shell until the local web UI phase.
+
+## Custom Copilot Agents
+
+`packages/agents` owns Phase 13 custom agent generation. `AgentService` defines and renders seven first-class Copilot agents: `FeatureArchitect`, `FeatureImplementer`, `CodeReviewer`, `TestPlanner`, `Debugger`, `SecurityReviewer`, and `PerformanceReviewer`.
+
+The default install target is `.github/agents/`, with `--output <dir>` available for custom locations. Generated files use the `.agent.md` suffix and include frontmatter, model and tools metadata, required instruction/handoff/safety sections, and references to `.copilot-architect/` artifacts.
+
+The `agents install`, `agents update`, `agents validate`, and `agents doctor` CLI commands call `AgentService`. Existing files are skipped by default, while `--force` and `agents update` create timestamped backups before overwriting. `--dry-run` reports planned actions without writing files.
+
+## Custom Instructions And Skills
+
+`packages/instructions` owns Phase 14 custom instruction and skill generation. `InstructionService` reads repo analysis through `RepoDiscoveryService`, previews repo-aware content, writes `.github/copilot-instructions.md`, and generates skill files under `.github/skills/`.
+
+Generated instructions include repo architecture summary, detected languages, frameworks, package managers, build/test/lint/format commands, coding conventions, safety rules, planning workflow, approval workflow, validation workflow, and review workflow. The generated block records timestamp and repo-map source metadata.
+
+Existing instruction and skill files are backed up before overwrite. Instruction regeneration preserves user-authored content outside the Copilot Architect generated block under a preserved notes section. The `instructions preview`, `instructions generate`, and `instructions validate` CLI commands call `InstructionService`.
+
+## Implementation Handoff
+
+`packages/planner` owns Phase 15 implementation handoff generation through `HandoffService`. Handoff generation requires explicit approval through `--approve` and never edits target repository code.
+
+`HandoffService` loads an approved plan from `.copilot-architect/plans/latest-plan.json` or a provided path, refreshes repo-map context through `RepoDiscoveryService`, loads the active safety policy, captures a git checkpoint through `GitCheckpointService` where possible, and writes `.copilot-architect/handoffs/<timestamp>-handoff.{json,md}` plus latest aliases.
+
+The Markdown handoff starts with `@FeatureImplementer`, includes the required rules, references the approved plan, lists validation commands, includes safety rules and repo context, and works with GitHub Copilot custom agents, Copilot chat, Codex, Claude Code, and generic coding agents. Clipboard copy is attempted where a platform clipboard tool is available, but failure to copy does not block artifact generation.
+
+## Review Workflow
+
+`packages/reviewer` owns Phase 16 review report generation through `ReviewService`. It reads the git diff, loads the approved plan from `.copilot-architect/plans/latest-plan.json` or a provided path, loads validation evidence from `.copilot-architect/runs/latest-validation.json` or a provided path, and writes `.copilot-architect/reviews/<timestamp>-review.{json,md}` plus latest aliases.
+
+Review reports include changed files, expected files from the plan, unexpected file changes, missing-test signals, config and dependency changes, security-sensitive file or diff signals, possible breaking-change signals, validation failures, risk summaries, and an `@CodeReviewer` prompt. The CLI `review --plan latest --validation latest` command is a thin shell over this package-owned workflow.
+
+## VS Code Extension Shell
+
+`packages/vscode-extension` owns Phase 17 as a thin VS Code wrapper. Its manifest contributes a Copilot Architect activity-bar container, a `Copilot Architect` webview, and command-palette commands for analyze, index, plan, validate, review, MCP startup, agent install, and instruction generation.
+
+The extension does not implement repo analysis, planning, validation, review, agent, or instruction behavior. Commands delegate to `npm run cli -- ...` in the active workspace root, and MCP startup delegates to `npm run cli -- mcp` through a VS Code terminal or Node child process fallback. The webview renders high-level sections for repo summary, languages/frameworks, plans, validation runs, review reports, agent status, and MCP status.
+
+## Local Web UI
+
+`packages/web` owns Phase 18 as an optional local-only browser UI. The CLI `serve` command starts a Node HTTP server bound to `127.0.0.1` by default and prints the local URL. The server rejects non-local requests and has no cloud backend.
+
+The web UI displays `.copilot-architect/repo-map.json`, latest plan, latest validation, latest review, workspace config, agent files, and MCP status. Workflow buttons call local API endpoints that delegate to `npm run cli -- ...` actions for analyze, index, search, plan, validate, review, workspace init/show, agent install, and instruction generation. MCP start/stop is handled as a local child process. The UI does not implement repo discovery, indexing, planning, validation, review, agents, instructions, or MCP behavior itself.
+
+## Multi-Repo Workspaces
+
+`packages/core` owns Phase 19 workspace configuration through `WorkspaceService`. It parses `.copilot-architect/workspace.json`, supports named repos with relative paths and roles, normalizes older `repoRoots` configs, adds/lists/removes repos, resolves absolute repo roots, and generates a workspace-level `.copilot-architect/repo-map.json` by aggregating repo discovery results.
+
+`packages/indexer` owns workspace indexing and search orchestration. `IndexingService.indexWorkspace` indexes each configured repo and refreshes the workspace repo-map. `IndexingService.searchWorkspace` searches each repo index and returns combined results annotated with repo name, role, and root.
+
+`packages/planner` owns cross-repo impact and workspace plans through `WorkspacePlanningService`. It identifies impacted repos from cross-repo search, creates per-repo validation plans from detected commands, and augments workspace plan artifacts with a `multiRepo` section. The CLI workspace commands and MCP tools call these package APIs rather than duplicating multi-repo logic.
 
 ## Artifacts
 

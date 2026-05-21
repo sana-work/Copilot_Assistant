@@ -1,4 +1,8 @@
 import type { CodeSymbol } from "@copilot-architect/shared";
+import type {
+  WorkspaceRepoDescriptor,
+  WorkspaceServiceResult
+} from "@copilot-architect/core";
 
 export interface LocalIndex {
   schemaVersion: string;
@@ -94,4 +98,50 @@ export interface SimilarFeatureOptions {
   startPath?: string;
   query: string;
   limit?: number;
+}
+
+export interface WorkspaceIndexOptions {
+  startPath?: string;
+  rebuild?: boolean;
+  maxFileBytes?: number;
+}
+
+export interface WorkspaceIndexEntry {
+  repo: WorkspaceRepoDescriptor;
+  result: IndexResult;
+}
+
+export interface WorkspaceIndexResult {
+  workspace: WorkspaceServiceResult["workspace"];
+  workspacePath: string;
+  repoMapPath: string;
+  repos: WorkspaceRepoDescriptor[];
+  results: WorkspaceIndexEntry[];
+}
+
+export interface WorkspaceSearchOptions {
+  startPath?: string;
+  query: string;
+  limit?: number;
+}
+
+export interface WorkspaceSearchResult extends SearchResult {
+  repoName: string;
+  repoRole?: string;
+  repoRoot: string;
+}
+
+export interface WorkspaceSearchEntry {
+  repo: WorkspaceRepoDescriptor;
+  response: SearchResponse;
+}
+
+export interface WorkspaceSearchResponse {
+  schemaVersion: string;
+  generatedAt: string;
+  query: string;
+  workspace: WorkspaceServiceResult["workspace"];
+  repos: WorkspaceRepoDescriptor[];
+  results: WorkspaceSearchEntry[];
+  combinedResults: WorkspaceSearchResult[];
 }

@@ -35,7 +35,10 @@ describe("Copilot Architect MCP server", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "repo_map",
+        "workspace_map",
         "search_repo",
+        "search_across_repos",
+        "analyze_cross_repo_impact",
         "generate_feature_plan",
         "get_validation_commands"
       ])
@@ -131,6 +134,32 @@ describe("Copilot Architect MCP server", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("requires approved=true");
   });
+
+  it("supports multi-repo workspace map, search, and cross-repo impact tools", async () => {
+    const fixture = await createWorkspaceFixture();
+    const { client } = await createConnectedServer(fixture.workspaceRoot);
+
+    const workspaceMap = await callJsonTool(client, "workspace_map", {
+      path: fixture.workspaceRoot
+    });
+    const search = await callJsonTool(client, "search_across_repos", {
+      path: fixture.workspaceRoot,
+      query: "invoice"
+    });
+    const impact = await callJsonTool(client, "analyze_cross_repo_impact", {
+      path: fixture.workspaceRoot,
+      request: "Add invoice approval workflow"
+    });
+
+    expect(workspaceMap.ok).toBe(true);
+    expect(workspaceMap.data.repoMap.summary.repoCount).toBe(2);
+    expect(
+      search.data.combinedResults.map((result: { repoName: string }) => result.repoName)
+    ).toContain("billing-service");
+    expect(
+      impact.data.impactedRepos.map((repo: { name: string }) => repo.name)
+    ).toContain("billing-service");
+  });
 });
 
 async function createConnectedServer(repoRoot: string) {
@@ -174,4 +203,51 @@ async function createRepo(files: Record<string, string>): Promise<string> {
   }
 
   return repoRoot;
+}
+
+async function createWorkspaceFixture(): Promise<{
+  workspaceRoot: string;
+}> {
+  const parent = await mkdtemp(path.join(tmpdir(), "copilot-mcp-workspace-"));
+  const workspaceRoot = path.join(parent, "customer-platform");
+  const customerApi = path.join(parent, "customer-api");
+  const billingService = path.join(parent, "billing-service");
+
+  await writeRepo(customerApi, {
+    "package.json": JSON.stringify({ name: "customer-api" }),
+    "src/customer.ts": "export const customer = true;"
+  });
+  await writeRepo(billingService, {
+    "package.json": JSON.stringify({ name: "billing-service" }),
+    "src/invoice.ts": "export const invoice = 'approved';"
+  });
+  await mkdir(path.join(workspaceRoot, ".copilot-architect"), { recursive: true });
+  await writeFile(
+    path.join(workspaceRoot, ".copilot-architect", "workspace.json"),
+    JSON.stringify({
+      schemaVersion: "0.1.0",
+      workspaceName: "Customer Platform",
+      workspaceRoot,
+      artifactRoot: path.join(workspaceRoot, ".copilot-architect"),
+      repos: [
+        { name: "customer-api", path: "../customer-api", role: "backend" },
+        { name: "billing-service", path: "../billing-service", role: "service" }
+      ],
+      repoRoots: []
+    }),
+    "utf8"
+  );
+
+  return { workspaceRoot };
+}
+
+async function writeRepo(
+  repoRoot: string,
+  files: Record<string, string>
+): Promise<void> {
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const fullPath = path.join(repoRoot, relativePath);
+    await mkdir(path.dirname(fullPath), { recursive: true });
+    await writeFile(fullPath, contents, "utf8");
+  }
 }

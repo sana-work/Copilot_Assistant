@@ -320,11 +320,19 @@ export interface McpToolResult extends SchemaBacked {
 }
 
 export interface WorkspaceConfig extends SchemaBacked {
+  workspaceName?: string;
   workspaceRoot: string;
+  repos?: WorkspaceRepoConfig[];
   repoRoots: string[];
   artifactRoot: string;
   customCommandsPath?: string;
   policyPath?: string;
+}
+
+export interface WorkspaceRepoConfig {
+  name: string;
+  path: string;
+  role?: string;
 }
 
 export interface CustomCommandConfig extends SchemaBacked {

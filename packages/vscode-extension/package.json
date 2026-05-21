@@ -1,10 +1,112 @@
 {
   "name": "@copilot-architect/vscode-extension",
+  "displayName": "Copilot Architect",
+  "description": "Thin VS Code shell for Copilot Architect CLI and MCP workflows.",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "publisher": "internal",
+  "categories": [
+    "Other"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "activationEvents": [
+    "onView:copilotArchitect.dashboard",
+    "onCommand:copilotArchitect.openDashboard",
+    "onCommand:copilotArchitect.refreshDashboard",
+    "onCommand:copilotArchitect.analyzeRepo",
+    "onCommand:copilotArchitect.buildIndex",
+    "onCommand:copilotArchitect.generatePlan",
+    "onCommand:copilotArchitect.validate",
+    "onCommand:copilotArchitect.review",
+    "onCommand:copilotArchitect.startMcp",
+    "onCommand:copilotArchitect.installAgents",
+    "onCommand:copilotArchitect.generateInstructions"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilotArchitect.openDashboard",
+        "title": "Copilot Architect: Open Dashboard"
+      },
+      {
+        "command": "copilotArchitect.refreshDashboard",
+        "title": "Copilot Architect: Refresh Dashboard",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilotArchitect.analyzeRepo",
+        "title": "Copilot Architect: Analyze Repo",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "copilotArchitect.buildIndex",
+        "title": "Copilot Architect: Build Index",
+        "icon": "$(database)"
+      },
+      {
+        "command": "copilotArchitect.generatePlan",
+        "title": "Copilot Architect: Generate Plan",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "copilotArchitect.validate",
+        "title": "Copilot Architect: Validate",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "copilotArchitect.review",
+        "title": "Copilot Architect: Review",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "copilotArchitect.startMcp",
+        "title": "Copilot Architect: Start MCP",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "copilotArchitect.installAgents",
+        "title": "Copilot Architect: Install Agents",
+        "icon": "$(hubot)"
+      },
+      {
+        "command": "copilotArchitect.generateInstructions",
+        "title": "Copilot Architect: Generate Instructions",
+        "icon": "$(book)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilotArchitect",
+          "title": "Copilot Architect",
+          "icon": "resources/copilot-architect.svg"
+        }
+      ]
+    },
+    "views": {
+      "copilotArchitect": [
+        {
+          "id": "copilotArchitect.dashboard",
+          "name": "Copilot Architect",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "copilotArchitect.refreshDashboard",
+          "when": "view == copilotArchitect.dashboard",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

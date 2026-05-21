@@ -22,8 +22,8 @@ function createCapture() {
   };
 }
 
-describe("CLI skeleton", () => {
-  it("lists every required placeholder command in help", () => {
+describe("CLI", () => {
+  it("lists every required command in help", () => {
     const help = getHelpText();
 
     for (const command of CLI_COMMANDS) {
@@ -38,7 +38,9 @@ describe("CLI skeleton", () => {
     expect(result.exitCode).toBe(0);
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
-    expect(capture.stdout.join("\n")).toContain("Phase 11 local MCP server is ready");
+    expect(capture.stdout.join("\n")).toContain(
+      "Phase 15 implementation handoff is ready"
+    );
   });
 
   it("prints help for --help", async () => {

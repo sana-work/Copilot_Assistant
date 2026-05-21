@@ -26,6 +26,7 @@ npm run cli -- mcp
 - `find_similar_feature`
 - `find_impacted_files`
 - `analyze_impact`
+- `analyze_cross_repo_impact`
 - `generate_plan_context`
 - `generate_feature_plan`
 - `get_validation_commands`
@@ -42,6 +43,8 @@ MCP tools call shared package APIs. They do not contain separate business logic 
 Tools return structured JSON. Missing latest artifacts return a structured `missing` response instead of throwing opaque file errors.
 
 Read-only tools are the default. `generate_feature_plan` writes plan artifacts and requires an explicit `approved=true` argument.
+
+Phase 19 workspace tools are multi-repo aware. `workspace_map` generates the workspace-level repo map, `search_across_repos` returns combined results annotated with repo name and role, and `analyze_cross_repo_impact` returns impacted repos plus per-repo validation plans.
 
 ## Artifacts
 

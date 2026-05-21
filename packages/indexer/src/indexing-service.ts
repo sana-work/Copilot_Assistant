@@ -3,6 +3,10 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  WorkspaceService,
+  type WorkspaceRepoDescriptor
+} from "@copilot-architect/core";
+import {
   CURRENT_SCHEMA_VERSION,
   type CodeSymbol,
   getArtifactDirectoryPath,
@@ -20,7 +24,12 @@ import type {
   SearchOptions,
   SearchResponse,
   SearchResult,
-  SimilarFeatureOptions
+  SimilarFeatureOptions,
+  WorkspaceIndexOptions,
+  WorkspaceIndexResult,
+  WorkspaceSearchOptions,
+  WorkspaceSearchResponse,
+  WorkspaceSearchResult
 } from "./models.js";
 
 const INDEX_VERSION = "0.1.0-json";
@@ -98,6 +107,67 @@ export class IndexingService {
     return createStatus(repoRoot, index, indexPath, statusPath);
   }
 
+  async indexWorkspace(
+    options: WorkspaceIndexOptions = {}
+  ): Promise<WorkspaceIndexResult> {
+    const workspaceService = new WorkspaceService();
+    const workspaceMap = await workspaceService.createWorkspaceMap({
+      startPath: options.startPath
+    });
+    const results = [];
+
+    for (const repo of workspaceMap.repos) {
+      results.push({
+        repo,
+        result: await this.index({
+          startPath: repo.repoRoot,
+          rebuild: options.rebuild,
+          maxFileBytes: options.maxFileBytes
+        })
+      });
+    }
+
+    return {
+      workspace: workspaceMap.workspace,
+      workspacePath: workspaceMap.workspacePath,
+      repoMapPath: workspaceMap.repoMapPath,
+      repos: workspaceMap.repos,
+      results
+    };
+  }
+
+  async searchWorkspace(
+    options: WorkspaceSearchOptions
+  ): Promise<WorkspaceSearchResponse> {
+    const workspaceService = new WorkspaceService();
+    const workspace = await workspaceService.show({ startPath: options.startPath });
+    const repos = workspaceService.resolveRepos(workspace.workspace);
+    const results = [];
+
+    for (const repo of repos) {
+      results.push({
+        repo,
+        response: await this.search({
+          startPath: repo.repoRoot,
+          query: options.query,
+          limit: options.limit
+        })
+      });
+    }
+
+    const combinedResults = combineWorkspaceResults(results);
+
+    return {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      generatedAt: new Date().toISOString(),
+      query: options.query,
+      workspace: workspace.workspace,
+      repos,
+      results,
+      combinedResults
+    };
+  }
+
   private async readOrCreateIndex(repoRoot: string): Promise<LocalIndex> {
     const index = await tryReadIndex(getIndexPath(repoRoot));
 
@@ -107,6 +177,29 @@ export class IndexingService {
 
     return (await this.index({ startPath: repoRoot })).index;
   }
+}
+
+function combineWorkspaceResults(
+  entries: Array<{
+    repo: WorkspaceRepoDescriptor;
+    response: SearchResponse;
+  }>
+): WorkspaceSearchResult[] {
+  return entries
+    .flatMap((entry) =>
+      entry.response.results.map((result) => ({
+        ...result,
+        repoName: entry.repo.name,
+        repoRole: entry.repo.role,
+        repoRoot: entry.repo.repoRoot
+      }))
+    )
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.repoName.localeCompare(right.repoName) ||
+        left.relativePath.localeCompare(right.relativePath)
+    );
 }
 
 async function scanDocuments(

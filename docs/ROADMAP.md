@@ -72,18 +72,52 @@ Status: implemented with `packages/mcp-server`, the TypeScript MCP SDK, stdio st
 
 Complete the CLI command surface, help text, JSON output, exit codes, and command coverage across init, analyze, index, search, plan, validate, review, handoff, agents, instructions, workspace, commands, policy, audit, mcp, serve, status, and doctor.
 
+Status: implemented with per-command help, JSON-capable output paths, consistent exit codes, `status`, `serve`, review, approval-gated handoff, agents, instructions, and workspace command families. Package-owned services back non-core command behavior so CLI orchestration does not become business logic.
+
 ## Phase 13 - Custom Copilot Agents
 
-Generate custom Copilot agents, Copilot instructions, AGENTS.md suggestions, skill templates, backup-before-overwrite behavior, and doctor/update commands.
+Generate custom Copilot agents, validate metadata and required sections, install under `.github/agents/`, support configurable output paths, dry runs, backup-before-overwrite behavior, update commands, and doctor guidance.
 
-## Phase 14 - Review Reports
+Status: implemented as `AgentService` with seven required `.agent.md` templates, YAML frontmatter, tools/model metadata, safety and handoff sections, `.copilot-architect` artifact references, install/list/validate/update/doctor CLI support, dry-run/force/custom-output/JSON behavior, backups before overwrite, and validation for malformed agent files.
+
+## Phase 14 - Custom Instructions And Skills
+
+Generate Copilot instructions, AGENTS.md suggestions, skill templates, backup-before-overwrite behavior, and instruction validation/update commands.
+
+Status: implemented as `InstructionService` with repo-aware `.github/copilot-instructions.md` preview/generation/validation, backup-before-overwrite behavior, generated-block preservation of user-authored sections, generated timestamp and repo-map source metadata, and five skills under `.github/skills/`.
+
+## Phase 15 - Implementation Handoff
+
+Generate implementation handoff prompts from approved plans, repo maps, validation commands, and safety policy for Copilot custom agents, Codex, Claude Code, and other coding agents.
+
+Status: implemented as `HandoffService` with explicit `--approve` gating, latest or path-based plan loading, repo-map and safety-policy context, validation command inclusion, git checkpoint creation where possible, clipboard copy attempts where supported, JSON/Markdown handoff artifacts, and required `@FeatureImplementer` prompt format.
+
+## Phase 16 - Review Reports
 
 Generate review reports from git diff, validation evidence, plan-vs-diff comparison, risk analysis, missing-test detection, and reviewer prompts.
 
+Status: implemented as `ReviewService` with git diff reading, approved plan loading, optional validation report loading, expected-vs-actual file comparison, unexpected-change findings, missing-test detection, config/dependency/security/breaking-change signals, JSON/Markdown review artifacts, latest aliases, and a generated `@CodeReviewer` prompt.
+
+## Phase 17 - VS Code Extension Shell
+
+Add a basic VS Code extension shell with activity-bar entry, Copilot Architect webview, and commands for analyze, index, plan, validate, review, MCP startup, agent installation, and instruction generation.
+
+Status: implemented as `packages/vscode-extension` with manifest contributions, activity-bar icon, webview dashboard sections, command registration, CLI delegation through `npm run cli -- ...`, MCP terminal/process startup, cross-platform npm executable handling, and smoke tests using a fake extension host.
+
+## Phase 18 - Optional Local Web UI
+
+Add a local-only browser UI for repo analysis, indexing, search, planning, artifact viewing, validation, review, workspace config, agent installation, instructions generation, and MCP start/stop.
+
+Status: implemented as `packages/web` with a local Node HTTP server, compact browser UI, repo-map/latest-plan/latest-validation/latest-review/workspace/agent artifact display, CLI-delegated workflow actions, local MCP child-process management, `npm run cli -- serve` startup, host/port/path flags, and local-port smoke tests.
+
+## Phase 19 - Multi-Repo Workspace Support
+
+Support `.copilot-architect/workspace.json` with named repos, paths, and roles; add/list/remove repos; index and search across repos; analyze cross-repo impact; generate multi-repo plans and per-repo validation plans; and expose workspace map/search/impact through MCP.
+
+Status: implemented with `WorkspaceService` config parsing and repo management, workspace-level repo-map generation, `IndexingService.indexWorkspace` and `searchWorkspace`, `WorkspacePlanningService` cross-repo impact and `multiRepo` plan augmentation, CLI `workspace list/remove` plus enhanced add/index/search/impact/plan/validate-plan behavior, and MCP `workspace_map`, `search_across_repos`, and `analyze_cross_repo_impact` tools.
+
 ## Later Optional Features
 
-- VS Code extension shell.
-- Local React web UI.
 - Enterprise policy packs.
 - Cloud sync.
 - Commercial packaging.

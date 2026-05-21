@@ -24,7 +24,7 @@ npm run cli -- search "invoice"
 npm run cli -- plan "Add invoice approval workflow"
 npm run cli -- agents install
 npm run cli -- instructions generate
-npm run cli -- handoff --plan latest
+npm run cli -- handoff --plan latest --approve
 npm run cli -- validate
 npm run cli -- review
 npm run cli -- mcp
@@ -44,10 +44,14 @@ Runtime artifacts will live under `.copilot-architect/`.
 
 ## Current Phase
 
-Phase 11 adds a local MCP server powered by the TypeScript MCP SDK. Agent hosts can start the server with stdio transport and call structured repo intelligence, search, planning-context, validation-command, safety-policy, latest-artifact, and agent-status tools:
+Phase 19 adds multi-repo workspace support. Workspaces use `.copilot-architect/workspace.json` with named repos, paths, and roles, then index/search/plan across those repos:
 
 ```bash
-npm run cli -- mcp
+npm run cli -- workspace init "Customer Platform"
+npm run cli -- workspace add customer-api ../customer-api --role backend
+npm run cli -- workspace index
+npm run cli -- workspace search "invoice"
+npm run cli -- workspace plan "Add invoice approval workflow"
 ```
 
-Most MCP tools are read-only repo intelligence tools. `generate_feature_plan` writes plan artifacts and requires `approved=true`; impact and context tools avoid writing plan artifacts.
+Workspace plans include impacted repos and per-repo validation plans. MCP also exposes `workspace_map`, `search_across_repos`, and `analyze_cross_repo_impact`.

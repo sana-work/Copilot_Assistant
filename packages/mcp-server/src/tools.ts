@@ -1,13 +1,15 @@
 import path from "node:path";
 
-import { RepoDiscoveryService } from "@copilot-architect/core";
+import { RepoDiscoveryService, WorkspaceService } from "@copilot-architect/core";
 import { IndexingService } from "@copilot-architect/indexer";
-import { FeaturePlanningService } from "@copilot-architect/planner";
+import {
+  FeaturePlanningService,
+  WorkspacePlanningService
+} from "@copilot-architect/planner";
 import {
   type DetectedCommand,
   type RepoCommandSet,
   type UniversalRepoMap,
-  getArtifactFilePath,
   readJsonFile
 } from "@copilot-architect/shared";
 import {
@@ -76,10 +78,13 @@ export function createCopilotArchitectTools(
     ),
     tool(
       "workspace_map",
-      "Read workspace context or summarize the current repo map.",
+      "Read or generate the current multi-repo workspace map.",
       commonSchema,
       true,
-      async (args) => getWorkspaceMap(resolveStartPath(args, options))
+      async (args) =>
+        new WorkspaceService().createWorkspaceMap({
+          startPath: resolveStartPath(args, options)
+        })
     ),
     tool(
       "detect_languages",
@@ -149,10 +154,22 @@ export function createCopilotArchitectTools(
       searchSchema,
       true,
       async (args) =>
-        new IndexingService().search({
+        new IndexingService().searchWorkspace({
           startPath: resolveStartPath(args, options),
           query: stringArg(args, "query"),
           limit: numberArg(args, "limit", 20)
+        })
+    ),
+    tool(
+      "analyze_cross_repo_impact",
+      "Analyze likely cross-repo impact for a feature request.",
+      requestSchema,
+      true,
+      async (args) =>
+        new WorkspacePlanningService().analyzeImpact({
+          startPath: resolveStartPath(args, options),
+          request: stringArg(args, "request"),
+          searchLimit: numberArg(args, "limit", 12)
         })
     ),
     tool(
@@ -315,24 +332,6 @@ function tool(
 
 async function ensureRepoMap(startPath: string): Promise<UniversalRepoMap> {
   return (await new RepoDiscoveryService().analyze({ startPath })).repoMap;
-}
-
-async function getWorkspaceMap(startPath: string): Promise<unknown> {
-  const repoMap = await ensureRepoMap(startPath);
-  const workspacePath = getArtifactFilePath(repoMap.workspaceRoot, "workspace");
-  const workspace = await tryReadJson(workspacePath);
-
-  return (
-    workspace ?? {
-      workspaceRoot: repoMap.workspaceRoot,
-      repos: repoMap.repos.map((repo) => ({
-        repoRoot: repo.repoRoot,
-        displayName: repo.displayName,
-        projects: repo.projects.map((project) => project.name)
-      })),
-      summary: repoMap.summary
-    }
-  );
 }
 
 async function getValidationCommands(startPath: string): Promise<unknown> {
