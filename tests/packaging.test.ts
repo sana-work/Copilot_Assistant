@@ -80,7 +80,7 @@ describe("Phase 23 internal packaging", () => {
     const doctor = JSON.parse(doctorCapture.stdout.join("\n"));
 
     expect(versionCapture.stdout.join("\n")).toContain("Copilot Architect 0.1.0");
-    expect(doctor.summary).toContain("packaging");
+    expect(doctor.status).toBe("ok");
     expect(doctor.checks.map((check: { name: string }) => check.name)).toContain(
       "local-package"
     );

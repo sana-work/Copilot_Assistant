@@ -112,6 +112,7 @@ const commandDescriptions = {
   diagnostics: "Report repo readiness and advanced local intelligence.",
   status: "Show local Copilot Architect status.",
   doctor: "Run environment and project checks.",
+  demo: "Run a quick end-to-end demo on the current repo.",
   version: "Print the Copilot Architect version."
 } satisfies Record<CliCommandName, string>;
 
@@ -147,6 +148,7 @@ const commandUsage = {
   diagnostics: "npm run cli -- diagnostics [--path <repo>] [--json]",
   status: "npm run cli -- status [--path <repo>] [--json]",
   doctor: "npm run cli -- doctor [--json]",
+  demo: "npm run cli -- demo [--path <repo>] [--json]",
   version: "npm run cli -- version [--json]"
 } satisfies Record<CliCommandName, string>;
 
@@ -163,6 +165,9 @@ export function getHelpText(): string {
     "",
     "Commands:",
     ...commandLines,
+    "",
+    "Quick start:",
+    "  npm run cli -- demo",
     "",
     "Examples:",
     "  npm run cli -- analyze",
@@ -248,13 +253,48 @@ export function getDoctorText(nodeVersion = process.version): string {
   ].join("\n");
 }
 
+const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MINOR = 11;
+
+function parseNodeVersion(versionString: string): { major: number; minor: number } {
+  const match = /^v?(\d+)\.(\d+)/.exec(versionString);
+  if (!match) return { major: 0, minor: 0 };
+  return { major: Number(match[1]), minor: Number(match[2]) };
+}
+
+function checkNodeVersion(versionString: string): {
+  status: "ok" | "warning" | "error";
+  message: string;
+} {
+  const { major, minor } = parseNodeVersion(versionString);
+  const meetsRequirement =
+    major > MIN_NODE_MAJOR || (major === MIN_NODE_MAJOR && minor >= MIN_NODE_MINOR);
+
+  if (!meetsRequirement) {
+    return {
+      status: "error",
+      message: `Node.js ${versionString} is below the required minimum v${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}. Upgrade at https://nodejs.org/`
+    };
+  }
+
+  return {
+    status: "ok",
+    message: `Node.js ${versionString} meets the v${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}+ requirement.`
+  };
+}
+
 export function getDoctorReport(nodeVersion = process.version): DiagnosticReport {
+  const nodeCheck = checkNodeVersion(nodeVersion);
+  const hasErrors = nodeCheck.status === "error";
+
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     id: "phase-23-doctor",
-    status: "ok",
-    summary: "Phase 23 packaging and internal team controls are ready",
+    status: hasErrors ? "error" : "ok",
+    summary: hasErrors
+      ? "Environment issues detected — see checks below."
+      : "Environment looks good. Run `npm run cli -- demo` to verify end-to-end.",
     environment: {
       nodeVersion,
       packageManager: "npm",
@@ -262,9 +302,14 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
     },
     checks: [
       {
+        name: "node-version",
+        status: nodeCheck.status,
+        message: nodeCheck.message
+      },
+      {
         name: "version-command",
         status: "ok",
-        message: "Run `npm run cli -- version` to verify the installed CLI version."
+        message: `Copilot Architect ${COPILOT_ARCHITECT_VERSION} — run \`npm run cli -- version\` to confirm.`
       },
       {
         name: "local-package",
@@ -281,7 +326,7 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
       {
         name: "runtime",
         status: "ok",
-        message: "TypeScript/Node.js-first with Node.js 20.11 or newer recommended."
+        message: "TypeScript/Node.js-first with Node.js 20.11 or newer required."
       },
       {
         name: "setup",
@@ -309,12 +354,12 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
       {
         name: "dotnet-engine",
         status: "ok",
-        message: "C#/.NET MVP engine is not present"
+        message: "C#/.NET MVP engine is not present — TypeScript/Node.js only."
       },
       {
         name: "visual-studio-vsix",
         status: "ok",
-        message: "Visual Studio VSIX MVP is not present"
+        message: "Visual Studio VSIX is not in scope for MVP."
       }
     ],
     artifactRoot: ARTIFACT_DIRECTORY
@@ -687,6 +732,18 @@ export async function runCli(
         options.json ? JSON.stringify(result, null, 2) : getDiagnosticsText(result)
       );
       return { exitCode: result.status === "error" ? 1 : 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
+  if (rawCommand === "demo") {
+    try {
+      const options = parseDemoArgs(commandArgs);
+      const result = await runDemo({ startPath: options.startPath, stdout });
+      stdout(options.json ? JSON.stringify(result, null, 2) : getDemoSummaryText(result));
+      return { exitCode: result.success ? 0 : 1 };
     } catch (error) {
       stderr(error instanceof Error ? error.message : String(error));
       return { exitCode: 1 };
@@ -2797,6 +2854,152 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+interface DemoCliOptions {
+  startPath?: string;
+  json: boolean;
+}
+
+interface DemoStepResult {
+  step: string;
+  ok: boolean;
+  message: string;
+  durationMs: number;
+}
+
+interface DemoResult {
+  success: boolean;
+  repoRoot: string;
+  steps: DemoStepResult[];
+  nextSteps: string[];
+}
+
+function parseDemoArgs(args: string[]): DemoCliOptions {
+  let startPath: string | undefined;
+  let json = false;
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if ((arg === "--path" || arg === "--root") && args[index + 1]) {
+      startPath = args[++index];
+    } else if (arg === "--json") {
+      json = true;
+    }
+  }
+
+  return { startPath, json };
+}
+
+async function runDemo(options: {
+  startPath?: string;
+  stdout: (message: string) => void;
+}): Promise<DemoResult> {
+  const { startPath, stdout } = options;
+  const steps: DemoStepResult[] = [];
+
+  function log(message: string): void {
+    stdout(`  ${message}`);
+  }
+
+  stdout(`\n${PROJECT_NAME} demo`);
+  stdout("=".repeat(40));
+  stdout("Running a quick end-to-end demonstration...\n");
+
+  async function runStep<T>(
+    label: string,
+    fn: () => Promise<T>
+  ): Promise<{ ok: boolean; result?: T; message: string }> {
+    const start = Date.now();
+    stdout(`▶ ${label}`);
+    try {
+      const result = await fn();
+      const ms = Date.now() - start;
+      steps.push({ step: label, ok: true, message: "ok", durationMs: ms });
+      log(`✓ done (${ms}ms)`);
+      return { ok: true, result, message: "ok" };
+    } catch (error) {
+      const ms = Date.now() - start;
+      const message = error instanceof Error ? error.message : String(error);
+      steps.push({ step: label, ok: false, message, durationMs: ms });
+      log(`✗ ${message}`);
+      return { ok: false, message };
+    }
+  }
+
+  // Step 1: Analyze repo
+  let repoRoot = path.resolve(startPath ?? process.cwd());
+  const analyzeStep = await runStep("Analyze repo structure", async () => {
+    const result = await new RepoDiscoveryService().analyze({ startPath });
+    repoRoot = result.repoRoot;
+    const map = result.repoMap;
+    log(`Repo: ${repoRoot}`);
+    log(`Languages: ${map.summary.primaryLanguages.join(", ") || "none detected"}`);
+    log(`Frameworks: ${map.summary.primaryFrameworks.join(", ") || "none detected"}`);
+    return result;
+  });
+
+  // Step 2: Build index
+  const indexStep = await runStep("Build local search index", async () => {
+    const result = await new IndexingService().index({ startPath: repoRoot });
+    log(`Indexed ${result.index.documents.length} files (${result.mode} mode)`);
+    return result;
+  });
+
+  // Step 3: Search
+  if (indexStep.ok) {
+    await runStep('Search index for "test"', async () => {
+      const response = await new IndexingService().search({
+        startPath: repoRoot,
+        query: "test",
+        limit: 5
+      });
+      log(`Found ${response.results.length} results`);
+      for (const hit of response.results.slice(0, 3)) {
+        log(`  ${hit.relativePath} (score: ${hit.score.toFixed(2)})`);
+      }
+      return response;
+    });
+  }
+
+  // Step 4: Diagnostics
+  await runStep("Run repo readiness diagnostics", async () => {
+    const result = await new AdvancedAnalysisService().diagnose({ startPath: repoRoot });
+    log(`Status: ${result.status}`);
+    const errors = result.diagnostics.filter((d) => d.severity === "error");
+    const warnings = result.diagnostics.filter((d) => d.severity === "warning");
+    if (errors.length > 0) log(`Errors: ${errors.map((d) => d.message).join(", ")}`);
+    if (warnings.length > 0) log(`Warnings: ${warnings.length} warning(s) found`);
+    return result;
+  });
+
+  stdout("");
+  const failedCount = steps.filter((s) => !s.ok).length;
+  const success = failedCount === 0;
+
+  const nextSteps = [
+    `npm run cli -- plan "Describe your feature here"`,
+    "npm run cli -- agents install",
+    "npm run cli -- instructions generate",
+    "npm run cli -- validate --test",
+    "npm run cli -- review"
+  ];
+
+  return { success, repoRoot, steps, nextSteps };
+}
+
+function getDemoSummaryText(result: DemoResult): string {
+  const passed = result.steps.filter((s) => s.ok).length;
+  const failed = result.steps.filter((s) => !s.ok).length;
+  const status = result.success ? "PASSED" : `${failed} step(s) failed`;
+
+  return [
+    "",
+    `Demo result: ${status} (${passed}/${result.steps.length} steps ok)`,
+    "",
+    "Next steps:",
+    ...result.nextSteps.map((step) => `  ${step}`)
+  ].join("\n");
 }
 
 function isCliCommand(value: string): value is CliCommandName {

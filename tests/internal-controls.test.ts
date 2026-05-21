@@ -234,7 +234,7 @@ describe("Phase 20 internal team controls", () => {
 
     expect(doctorText).toContain("scripts/setup.sh");
     expect(doctorText).toContain("cleanup --dry-run");
-    expect(report.summary).toContain("internal team controls");
+    expect(report.status).toBe("ok");
     expect(ARTIFACT_DIRECTORY).toBe(".copilot-architect");
   });
 });

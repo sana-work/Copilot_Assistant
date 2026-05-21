@@ -99,32 +99,87 @@ function isSupportedCommand(command: ValidationCommand): boolean {
     return true;
   }
 
-  if (executable === "python") {
-    return (
-      command.args[0] === "-m" &&
-      (command.args[1] === "pytest" || command.args[1] === "unittest")
-    );
+  if (executable === "python" || executable === "python3" || executable === "py") {
+    if (command.args[0] === "-m") {
+      return (
+        command.args[1] === "pytest" ||
+        command.args[1] === "unittest" ||
+        command.args[1] === "mypy" ||
+        command.args[1] === "flake8" ||
+        command.args[1] === "black" ||
+        command.args[1] === "ruff" ||
+        command.args[1] === "isort" ||
+        command.args[1] === "pylint"
+      );
+    }
+    // Allow setup.py test/build but not setup.py install which may mutate the system
+    if (command.args[0] === "setup.py") {
+      return command.args[1] === "test" || command.args[1] === "build";
+    }
+    return false;
+  }
+
+  if (executable === "node") {
+    // Allow node to run scripts only (not -e exec)
+    return command.args.length > 0 && command.args[0] !== "-e" && !command.args.includes("--eval");
   }
 
   return false;
 }
 
 const supportedExecutables = new Set([
+  // JavaScript / TypeScript package managers and runtimes
   "npm",
+  "npx",
   "pnpm",
   "yarn",
+  "bun",
+  "deno",
+  "node",
+  // TypeScript / linting
+  "tsc",
+  "eslint",
+  "prettier",
+  "biome",
+  // Testing
+  "jest",
+  "vitest",
+  "mocha",
+  "jasmine",
+  "playwright",
+  "cypress",
+  // Build tools
+  "vite",
+  "webpack",
+  "rollup",
+  "esbuild",
+  "turbo",
+  "nx",
+  // Python
   "pytest",
   "python",
+  "python3",
+  "py",
   "poetry",
+  "pipenv",
+  "uv",
+  "ruff",
+  "mypy",
+  "flake8",
+  "black",
+  // JVM
   "maven",
   "mvn",
   "mvnw",
   "gradle",
   "gradlew",
+  // .NET (read-only operations only — actual run is blocked by policy)
+  "dotnet",
+  // Angular
   "ng",
-  "vite",
-  "jest",
-  "vitest",
-  "eslint",
-  "prettier"
+  // Systems languages
+  "cargo",
+  "go",
+  "rustfmt",
+  "clippy"
 ]);

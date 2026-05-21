@@ -44,6 +44,7 @@ export const CLI_COMMANDS = [
   "diagnostics",
   "status",
   "doctor",
+  "demo",
   "version"
 ] as const;
 

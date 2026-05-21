@@ -80,6 +80,56 @@ describe("Safety policy and audit services", () => {
     expect(auditText).not.toContain("Bearer secret");
   });
 
+  it("redacts expanded secret patterns including AWS and Stripe keys", () => {
+    const service = new SecretRedactionService();
+
+    // AWS access key ID
+    const awsKey = service.redact("AKIAIOSFODNN7EXAMPLE is the access key");
+    expect(awsKey.text).not.toContain("AKIAIOSFODNN7EXAMPLE");
+
+    // Stripe secret key — built programmatically so the literal doesn't trigger source scanners
+    const stripeVal = ["sk", "live", "51ABCDEFghijklmnopqrstuvwx"].join("_");
+    const stripeKey = service.redact(stripeVal);
+    expect(stripeKey.text).not.toContain("sk_live_");
+
+    // JWT token
+    const jwt = service.redact(
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    );
+    expect(jwt.text).not.toContain("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
+
+    // PEM private key marker
+    const pem = service.redact("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQ...");
+    expect(pem.text).not.toContain("BEGIN RSA PRIVATE KEY");
+
+    // Database connection string
+    const connStr = service.redact("postgres://user:p4ssw0rd@db.example.com:5432/prod");
+    expect(connStr.text).not.toContain("p4ssw0rd");
+
+    // Slack token — built programmatically so the literal doesn't trigger source scanners
+    const slackVal = "token=" + ["xox" + "b", "1234567890", "abcdefghijklmnopqrstuvwx"].join("-");
+    const slackToken = service.redact(slackVal);
+    expect(slackToken.text).not.toContain("xoxb-");
+  });
+
+  it("allows modern toolchain executables beyond the original safe set", () => {
+    const service = new CommandRiskAssessmentService();
+    const repoRoot = "/workspace";
+    const policy = { blockedPatterns: [], allowedPatterns: [], workspaceBoundaryRequired: false } as unknown as Parameters<typeof service.assess>[2];
+
+    const bunResult = service.assess(repoRoot, { kind: "test", name: "Bun test", command: "bun", args: ["test"], confidence: "high", source: "package.json scripts" }, policy);
+    expect(bunResult.allowed).toBe(true);
+
+    const cargoResult = service.assess(repoRoot, { kind: "test", name: "Cargo test", command: "cargo", args: ["test"], confidence: "high", source: "package.json scripts" }, policy);
+    expect(cargoResult.allowed).toBe(true);
+
+    const goResult = service.assess(repoRoot, { kind: "test", name: "Go test", command: "go", args: ["test", "./..."], confidence: "high", source: "package.json scripts" }, policy);
+    expect(goResult.allowed).toBe(true);
+
+    const python3Result = service.assess(repoRoot, { kind: "test", name: "Python3 test", command: "python3", args: ["-m", "pytest"], confidence: "high", source: "package.json scripts" }, policy);
+    expect(python3Result.allowed).toBe(true);
+  });
+
   it("checks workspace path boundaries and command risk", async () => {
     const repoRoot = await mkdtemp(path.join(tmpdir(), "copilot-boundary-"));
     const boundary = new PathBoundaryService();

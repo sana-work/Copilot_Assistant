@@ -103,7 +103,7 @@ const agentDefinitions: AgentDefinition[] = [
     name: "FeatureArchitect",
     description:
       "Analyze the repository, find similar patterns, and produce detailed implementation plans without editing code.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "repo_map",
@@ -145,7 +145,7 @@ const agentDefinitions: AgentDefinition[] = [
     name: "FeatureImplementer",
     description:
       "Implement only an approved plan with minimal scoped changes, tests, and validation evidence.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "edit",
@@ -189,7 +189,7 @@ const agentDefinitions: AgentDefinition[] = [
     name: "CodeReviewer",
     description:
       "Review implementation against the approved plan and validation evidence.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "search/codebase",
@@ -229,7 +229,7 @@ const agentDefinitions: AgentDefinition[] = [
     fileName: "TestPlanner.agent.md",
     name: "TestPlanner",
     description: "Identify the test coverage needed for a feature.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "repo_map",
@@ -258,7 +258,7 @@ const agentDefinitions: AgentDefinition[] = [
     fileName: "Debugger.agent.md",
     name: "Debugger",
     description: "Analyze build, test, lint, and format failures and propose fixes.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "edit",
@@ -289,7 +289,7 @@ const agentDefinitions: AgentDefinition[] = [
     fileName: "SecurityReviewer.agent.md",
     name: "SecurityReviewer",
     description: "Review code changes for security issues.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "repo_map",
@@ -318,7 +318,7 @@ const agentDefinitions: AgentDefinition[] = [
     fileName: "PerformanceReviewer.agent.md",
     name: "PerformanceReviewer",
     description: "Review potential performance risks in code changes.",
-    model: "gpt-5.2",
+    model: "gpt-4o",
     tools: [
       "copilotArchitect/*",
       "repo_map",

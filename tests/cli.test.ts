@@ -33,6 +33,12 @@ describe("CLI", () => {
     }
   });
 
+  it("help text includes demo quick-start hint", () => {
+    const help = getHelpText();
+    expect(help).toContain("demo");
+    expect(help).toContain("Quick start:");
+  });
+
   it("runs the doctor command", async () => {
     const capture = createCapture();
     const result = await runCli(["doctor"], capture.io);
@@ -40,9 +46,21 @@ describe("CLI", () => {
     expect(result.exitCode).toBe(0);
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
-    expect(capture.stdout.join("\n")).toContain(
-      "Phase 23 packaging and internal team controls are ready"
-    );
+  });
+
+  it("doctor reports error for unsupported node version", () => {
+    const report = getDoctorReport("v18.0.0");
+    expect(report.status).toBe("error");
+    const nodeCheck = report.checks.find((c) => c.name === "node-version");
+    expect(nodeCheck?.status).toBe("error");
+    expect(nodeCheck?.message).toContain("Upgrade");
+  });
+
+  it("doctor reports ok for supported node version", () => {
+    const report = getDoctorReport("v20.11.0");
+    expect(report.status).toBe("ok");
+    const nodeCheck = report.checks.find((c) => c.name === "node-version");
+    expect(nodeCheck?.status).toBe("ok");
   });
 
   it("runs the version command", async () => {
@@ -90,5 +108,15 @@ describe("CLI", () => {
     expect(report.schemaVersion).toBe("0.1.0");
     expect(report.environment.packageManager).toBe("npm");
     expect(report.checks.map((check) => check.name)).toContain("visual-studio-vsix");
+  });
+
+  it("runs the demo command end-to-end", async () => {
+    const capture = createCapture();
+    const result = await runCli(["demo"], capture.io);
+
+    expect(result.exitCode).toBe(0);
+    const output = capture.stdout.join("\n");
+    expect(output).toContain("demo");
+    expect(output).toContain("Next steps:");
   });
 });

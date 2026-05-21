@@ -158,11 +158,30 @@ Prove the locked MVP works across representative React, Angular, Python, Java, p
 
 Status: implemented with strict `--root` support for nested sample validation, clean-machine command detection fixes, `docs/PHASE_26_VALIDATION_REPORT.md`, and regression coverage in `tests/phase26-validation.test.ts`.
 
+## Phase 27 - Developer Experience Polish
+
+Improve internal usability through better CLI help, error messages, a one-command demo, a setup verification flow, cleaner doctor output, and a cleanup command for generated artifacts.
+
+Status: implemented with:
+
+- `npm run cli -- demo` — 4-step end-to-end demonstration (analyze → index → search → diagnostics) with actionable next steps and `--json` support.
+- `doctor` now performs a real Node.js version check (≥ 20.11) and reports `status: "error"` with an upgrade link for unsupported runtimes, instead of always returning `"ok"`.
+- Help text updated with a `Quick start: npm run cli -- demo` hint.
+- All 7 agent templates corrected from fictional `gpt-5.2` to `gpt-4o`.
+- Expanded secret redaction (AWS, GCP, Stripe, JWT, PEM, database connection strings, npm tokens, Slack tokens) in both `SecretRedactionService` and the policy default patterns.
+- Extended safe executable set: `bun`, `deno`, `npx`, `tsc`, `biome`, `cargo`, `go`, `rustfmt`, `clippy`, `dotnet`, `mocha`, `jasmine`, `playwright`, `cypress`, `webpack`, `esbuild`, `turbo`, `nx`, `python3`, `uv`, `ruff`, `mypy`, `flake8`, `black`, `pipenv`.
+- 6 new tests (147 total passing).
+- Documentation updated: README, CHANGELOG, INSTALLATION, LANGUAGE_SUPPORT, SECURITY_MODEL, MCP_TOOLS, AGENT_WORKFLOWS, TROUBLESHOOTING, INTERNAL_TEAM_SETUP, UPGRADE_GUIDE.
+
 ## Later Optional Features
 
+- Semantic search (embeddings-based) for the local index.
 - Enterprise policy packs.
 - Cloud sync.
 - Commercial packaging.
 - Visual Studio VSIX.
 - .NET wrapper.
-- Heavier semantic indexing.
+- GitHub Issues/PR context in feature planning.
+- Plan cost estimation (hours, tokens, complexity).
+- Dependency vulnerability scanning (npm audit, pip safety integration).
+- Telemetry system (opt-in, local-only).

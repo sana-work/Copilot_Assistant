@@ -199,9 +199,36 @@ export const DEFAULT_BLOCKED_PATTERNS = [
 ];
 
 export const DEFAULT_SECRET_REDACTION_PATTERNS = [
-  String.raw`\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY)[A-Z0-9_]*)=([^\s]+)`,
+  // Generic env-var assignments containing sensitive keywords
+  String.raw`\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|AUTH_KEY|PRIVATE_KEY|CLIENT_SECRET|SIGNING_KEY|ENCRYPTION_KEY)[A-Z0-9_]*)=([^\s]+)`,
+  // HTTP Authorization header values
   String.raw`\bBearer\s+[A-Za-z0-9._~+/=-]+`,
-  String.raw`\bgh[pousr]_[A-Za-z0-9_]+`
+  // GitHub personal access tokens and fine-grained tokens
+  String.raw`\bgh[pousr]_[A-Za-z0-9_]+`,
+  // AWS access key IDs (20-char uppercase alphanumeric starting with AKIA/ASIA/AROA)
+  String.raw`\b(?:AKIA|ASIA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16}\b`,
+  // AWS secret access key (40-char base64-like string following the keyword)
+  String.raw`(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*[A-Za-z0-9/+=]{40}`,
+  // GCP service account / API key patterns
+  String.raw`AIza[A-Za-z0-9_-]{35}`,
+  // Stripe secret keys
+  String.raw`\bsk_(?:live|test)_[A-Za-z0-9]{24,}`,
+  // Stripe publishable keys (less sensitive but redact anyway)
+  String.raw`\bpk_(?:live|test)_[A-Za-z0-9]{24,}`,
+  // Stripe restricted keys
+  String.raw`\brk_(?:live|test)_[A-Za-z0-9]{24,}`,
+  // PEM private key blocks
+  String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`,
+  // JWT tokens (three base64url segments separated by dots)
+  String.raw`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`,
+  // Generic high-entropy hex secrets (32+ hex chars) following known keywords
+  String.raw`(?:secret|token|password|api_key|apikey)\s*[=:]\s*[0-9a-f]{32,}`,
+  // Database connection strings
+  String.raw`(?:postgres|mysql|mongodb|redis|mssql|sqlserver):\/\/[^\s@]*:[^\s@]+@`,
+  // npm auth tokens
+  String.raw`\b(?:_authToken|npm_token)\s*=\s*[A-Za-z0-9_-]{36,}`,
+  // Slack tokens
+  String.raw`\bxox[baprs]-[A-Za-z0-9-]+`
 ];
 
 async function fileExists(filePath: string): Promise<boolean> {
