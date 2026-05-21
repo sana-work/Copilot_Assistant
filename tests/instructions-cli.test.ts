@@ -70,9 +70,13 @@ describe("instructions CLI", () => {
       ).exitCode
     ).toBe(0);
     expect(generateCapture.stdout.join("\n")).toContain("Skills: 5");
+    expect(generateCapture.stdout.join("\n")).toContain("Prompts: 4");
     expect(validateCapture.stdout.join("\n")).toContain("Status: ok");
     await access(path.join(repoRoot, ".github/copilot-instructions.md"));
     await access(path.join(repoRoot, ".github/skills/code-review/SKILL.md"));
+    await access(
+      path.join(repoRoot, ".github/prompts/copilot-architect-review.prompt.md")
+    );
   });
 
   it("supports custom instruction output and JSON output", async () => {
@@ -104,6 +108,7 @@ describe("instructions CLI", () => {
     expect(json.outputPath).toBe(existingPath);
     expect(json.backupPath).toBeDefined();
     expect(json.skills).toHaveLength(5);
+    expect(json.prompts).toHaveLength(4);
     expect(await readFile(existingPath, "utf8")).toContain("Existing team section");
   });
 });

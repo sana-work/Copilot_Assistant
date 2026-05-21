@@ -133,9 +133,11 @@ The CLI `validate`, `validate --build`, `validate --test`, `validate --lint`, an
 
 ## Safety Policy And Audit
 
-`packages/validator` owns Phase 10 safety services. `SafetyPolicyService` loads or creates `.copilot-architect/policy.json`, `CommandRiskAssessmentService` blocks dangerous commands and warns on git history mutations, `PathBoundaryService` prevents workspace escapes, `SecretRedactionService` redacts likely secrets, `AuditLogService` writes JSONL audit entries under `.copilot-architect/audit/`, `GitCheckpointService` captures current git state, and `RollbackGuideGenerator` creates human-readable rollback guidance.
+`packages/validator` owns safety and internal team control services. `SafetyPolicyService` loads or creates `.copilot-architect/policy.json`, `CommandRiskAssessmentService` blocks dangerous commands and warns on git history mutations, `PathBoundaryService` prevents workspace escapes, `SecretRedactionService` redacts likely secrets, `AuditLogService` writes JSONL audit entries under `.copilot-architect/audit/`, `GitCheckpointService` captures current git state, `RollbackGuideGenerator` creates human-readable rollback guidance, and `ArtifactCleanupService` applies retention policy to local artifacts.
 
-The CLI `policy show`, `policy validate`, and `audit list` commands call these services. Validation execution uses the same policy, risk, redaction, and audit services.
+The policy includes command allow/block lists, required approval gates, telemetry disabled by default, local-first operation, configurable artifact retention, admin agent template paths, and trust metadata for generated files. The CLI `policy show`, `policy validate`, `audit list`, and `cleanup` commands call validator services. Validation execution uses the same policy, risk, redaction, and audit services.
+
+The `cleanup` command is dry-run by default when policy says so. It only considers files under `.copilot-architect/` retention directories, preserves latest aliases such as `latest-plan.json`, records a redacted audit entry, and deletes only when a human passes `--apply`.
 
 ## Local MCP Server
 
@@ -144,6 +146,8 @@ The CLI `policy show`, `policy validate`, and `audit list` commands call these s
 The server exposes `repo_map`, `workspace_map`, language/framework/package-manager/command detection tools, repo and workspace search, similar feature lookup, impact/context generation, approval-gated feature plan generation, validation command lookup, safety policy lookup, latest plan/validation/review artifact readers, and `agent_status`.
 
 Tools return structured JSON in MCP text content and call `packages/core`, `packages/indexer`, `packages/planner`, and `packages/validator` rather than duplicating business logic. Read-only tools do not write plan artifacts; `generate_feature_plan` requires `approved=true` before it writes `.copilot-architect/plans/` artifacts.
+
+`CopilotChatMcpConfigService` writes `.vscode/mcp.json` with a `copilotArchitect` stdio server for GitHub Copilot Chat in VS Code. This is a supported MCP configuration file, not a Copilot internal modification.
 
 ## CLI Completion Services
 
@@ -160,15 +164,17 @@ Workspace `index`, `search`, `impact`, `plan`, and `validate-plan` commands orch
 
 `packages/agents` owns Phase 13 custom agent generation. `AgentService` defines and renders seven first-class Copilot agents: `FeatureArchitect`, `FeatureImplementer`, `CodeReviewer`, `TestPlanner`, `Debugger`, `SecurityReviewer`, and `PerformanceReviewer`.
 
-The default install target is `.github/agents/`, with `--output <dir>` available for custom locations. Generated files use the `.agent.md` suffix and include frontmatter, model and tools metadata, required instruction/handoff/safety sections, and references to `.copilot-architect/` artifacts.
+The default install target is `.github/agents/`, with `--output <dir>` available for custom locations. Generated files use the `.agent.md` suffix and include frontmatter, model and tools metadata, required instruction/handoff/safety sections, trust metadata, and references to `.copilot-architect/` artifacts.
 
-The `agents install`, `agents update`, `agents validate`, and `agents doctor` CLI commands call `AgentService`. Existing files are skipped by default, while `--force` and `agents update` create timestamped backups before overwriting. `--dry-run` reports planned actions without writing files.
+The `agents install`, `agents update`, `agents validate`, and `agents doctor` CLI commands call `AgentService`. Existing files are skipped by default, while `--force` and `agents update` create timestamped backups before overwriting. `--dry-run` reports planned actions without writing files. Teams can add admin-owned `.agent.md` templates in policy-configured paths such as `templates/agents` or `.copilot-architect/agent-templates`; install/update copies those templates alongside built-ins.
+
+Generated agents are Copilot Chat-ready. Their frontmatter includes `copilotArchitect/*` MCP tool access and handoffs for `FeatureArchitect` to `FeatureImplementer`, `FeatureImplementer` to `CodeReviewer`, and `CodeReviewer` to `Debugger` when validation failed. `agents doctor --path <repo>` checks agent files and `.vscode/mcp.json` readiness.
 
 ## Custom Instructions And Skills
 
 `packages/instructions` owns Phase 14 custom instruction and skill generation. `InstructionService` reads repo analysis through `RepoDiscoveryService`, previews repo-aware content, writes `.github/copilot-instructions.md`, and generates skill files under `.github/skills/`.
 
-Generated instructions include repo architecture summary, detected languages, frameworks, package managers, build/test/lint/format commands, coding conventions, safety rules, planning workflow, approval workflow, validation workflow, and review workflow. The generated block records timestamp and repo-map source metadata.
+Generated instructions include repo architecture summary, detected languages, frameworks, package managers, build/test/lint/format commands, coding conventions, safety rules, trust metadata, planning workflow, approval workflow, validation workflow, and review workflow. The generated block records timestamp and repo-map source metadata. `instructions generate` also writes `.github/prompts/*.prompt.md` files for planning, implementation, review, and debugging in GitHub Copilot Chat.
 
 Existing instruction and skill files are backed up before overwrite. Instruction regeneration preserves user-authored content outside the Copilot Architect generated block under a preserved notes section. The `instructions preview`, `instructions generate`, and `instructions validate` CLI commands call `InstructionService`.
 
@@ -205,6 +211,32 @@ The web UI displays `.copilot-architect/repo-map.json`, latest plan, latest vali
 `packages/indexer` owns workspace indexing and search orchestration. `IndexingService.indexWorkspace` indexes each configured repo and refreshes the workspace repo-map. `IndexingService.searchWorkspace` searches each repo index and returns combined results annotated with repo name, role, and root.
 
 `packages/planner` owns cross-repo impact and workspace plans through `WorkspacePlanningService`. It identifies impacted repos from cross-repo search, creates per-repo validation plans from detected commands, and augments workspace plan artifacts with a `multiRepo` section. The CLI workspace commands and MCP tools call these package APIs rather than duplicating multi-repo logic.
+
+## Advanced Intelligence
+
+`packages/core` owns Phase 21 advanced local intelligence through `AdvancedAnalysisService`. It scans local files, combines that evidence with repo maps, and detects architecture patterns, dependency manifests, route/API surfaces, source-to-test relationships, readiness diagnostics, and risk scores. It remains local-first and does not require a network service or vector database.
+
+The service detects React apps, Angular apps, Node APIs, Python services, Java Spring services, monorepos, library/package layouts, and CLI apps. Route detection covers Express, FastAPI, Flask, Django URL configs, Spring mappings, Angular routes, React Router, and Next.js file routes. Dependency manifest detection covers `package.json`, `requirements.txt`, `pyproject.toml`, `pom.xml`, and `build.gradle`.
+
+`packages/planner` embeds the advanced analysis in generated plans. Plan Markdown and JSON include architecture signals, routes/APIs, test relationships, risk scores, plan quality checks, and repo readiness diagnostics. The CLI `diagnostics` command calls `AdvancedAnalysisService.diagnose` and reports readiness issues such as missing package manager evidence, missing build scripts, missing tests, missing repo maps, and stale indexes.
+
+## Sample Matrix And CI
+
+Phase 22 adds fixture repositories under `samples/`: `react-app`, `angular-app`, `python-service`, `java-maven-service`, `java-gradle-service`, `node-api`, `polyglot-monorepo`, and `generic-repo`. The samples are intentionally small and dependency-light, but they include real manifests, source files, route/API examples, and nearby tests so detection paths are exercised against files on disk.
+
+`tests/sample-matrix.test.ts` copies samples into temporary workspaces and runs the MVP flow without mutating tracked fixture files. It covers discovery, indexing, search, planning, command detection, safety blocking, MCP tools, agent installation, instruction generation, handoff generation, validation, review, workspace support, CLI commands, and end-to-end flow. `.github/workflows/ci.yml` runs install, format, lint, build, and tests for pull requests and pushes.
+
+## Internal Setup Scripts
+
+Phase 20 adds clone-friendly setup scripts in `scripts/`. `check-env.sh` and `check-env.ps1` verify Node.js 20.11+ and npm. `setup.sh` and `setup.ps1` run the environment check, install dependencies, build packages, and run the Vitest suite. These scripts do not replace npm scripts; they are a team convenience for first-time setup.
+
+## Internal Packaging
+
+Phase 23 keeps distribution local and team-oriented. The root package owns the internal sharing workflow through `npm run package:local`, which builds the TypeScript project, verifies `npm run cli -- version`, verifies `npm run cli -- doctor`, runs `npm pack`, and writes release artifacts under `dist/release/`.
+
+The local package artifact is a convenience tarball for team handoff and extraction. Active development should use a Git checkout or `npm link --workspace @copilot-architect/cli`. Marketplace publishing, commercial packaging, and enterprise installers remain out of scope for the MVP.
+
+The CLI `version` command reports the internal package version, schema version, Node runtime, package manager, and distribution channel. `doctor` includes packaging checks for the version command, local tarball script, and installation docs.
 
 ## Artifacts
 

@@ -1,6 +1,8 @@
 export const PROJECT_NAME = "Copilot Architect";
 
-export const CURRENT_SCHEMA_VERSION = "0.1.0";
+export const COPILOT_ARCHITECT_VERSION = "0.1.0";
+
+export const CURRENT_SCHEMA_VERSION = COPILOT_ARCHITECT_VERSION;
 
 export const ARTIFACT_DIRECTORY = ".copilot-architect";
 
@@ -31,6 +33,7 @@ export const CLI_COMMANDS = [
   "validate",
   "policy",
   "audit",
+  "cleanup",
   "review",
   "handoff",
   "agents",
@@ -38,8 +41,10 @@ export const CLI_COMMANDS = [
   "workspace",
   "mcp",
   "serve",
+  "diagnostics",
   "status",
-  "doctor"
+  "doctor",
+  "version"
 ] as const;
 
 export type CliCommandName = (typeof CLI_COMMANDS)[number];

@@ -1,0 +1,10 @@
+node_modules/
+.git/
+.github/
+.copilot-architect/
+coverage/
+dist/release/
+dist/local-package/
+*.log
+*.tsbuildinfo
+.DS_Store

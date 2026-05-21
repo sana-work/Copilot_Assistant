@@ -146,12 +146,12 @@ export class PythonAdapter
   }
 
   detectBuildCommands(context: AdapterContext): BuildCommand[] {
-    if (context.hasFile("pyproject.toml") || context.hasFile("setup.py")) {
+    if (context.hasFile("setup.py")) {
       return [
         {
           kind: "build",
-          name: "python build",
-          command: "python",
+          name: "python3 build",
+          command: "python3",
           args: ["-m", "build"],
           confidence: "low",
           source: "Python packaging config"
@@ -169,24 +169,14 @@ export class PythonAdapter
     const commands: TestCommand[] = [];
 
     if (frameworks.includes("pytest") || hasPytestConfig(context)) {
-      commands.push(
-        {
-          kind: "test",
-          name: "pytest",
-          command: "pytest",
-          args: [],
-          confidence: "high",
-          source: "pytest evidence"
-        },
-        {
-          kind: "test",
-          name: "python -m pytest",
-          command: "python",
-          args: ["-m", "pytest"],
-          confidence: "high",
-          source: "pytest evidence"
-        }
-      );
+      commands.push({
+        kind: "test",
+        name: "pytest",
+        command: "pytest",
+        args: [],
+        confidence: "high",
+        source: "pytest evidence"
+      });
     }
 
     if (
@@ -203,13 +193,14 @@ export class PythonAdapter
     }
 
     if (
-      frameworks.includes("unittest") ||
-      context.files.some((file) => fileName(file.path).startsWith("test_"))
+      !frameworks.includes("pytest") &&
+      (frameworks.includes("unittest") ||
+        context.files.some((file) => fileName(file.path).startsWith("test_")))
     ) {
       commands.push({
         kind: "test",
-        name: "python -m unittest",
-        command: "python",
+        name: "python3 -m unittest",
+        command: "python3",
         args: ["-m", "unittest"],
         confidence: "medium",
         source: "unittest evidence"

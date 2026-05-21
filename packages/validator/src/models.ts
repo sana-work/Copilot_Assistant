@@ -79,6 +79,7 @@ export interface CommandConfigInitResult {
 
 export interface ValidationServiceOptions {
   startPath?: string;
+  strictRoot?: boolean;
   categories?: CommandConfigCategory[];
   timeoutMs?: number;
   json?: boolean;
@@ -168,4 +169,40 @@ export interface GitCheckpointResult {
 export interface AuditListResult {
   auditPath: string;
   entries: AuditLogEntry[];
+}
+
+export interface ArtifactCleanupOptions {
+  startPath?: string;
+  dryRun?: boolean;
+  maxAgeDays?: number;
+  maxRuns?: number;
+}
+
+export interface ArtifactCleanupCandidate {
+  artifactDirectory: string;
+  path: string;
+  reason: "age" | "count";
+  mtime: string;
+  ageDays: number;
+  sizeBytes: number;
+  deleted: boolean;
+}
+
+export interface ArtifactCleanupResult {
+  schemaVersion: string;
+  generatedAt: string;
+  workspaceRoot: string;
+  artifactRoot: string;
+  policyPath: string;
+  dryRun: boolean;
+  retentionEnabled: boolean;
+  maxAgeDays: number;
+  maxRuns: number;
+  directories: string[];
+  scannedFiles: number;
+  keptFiles: number;
+  candidates: ArtifactCleanupCandidate[];
+  deleted: ArtifactCleanupCandidate[];
+  errors: string[];
+  summary: string;
 }

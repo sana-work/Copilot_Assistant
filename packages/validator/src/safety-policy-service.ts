@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  ARTIFACT_DIRECTORY_NAMES,
   CURRENT_SCHEMA_VERSION,
   type SafetyPolicy,
+  createTrustMetadata,
   ensureArtifactDirectories,
   getArtifactFilePath,
   parseJson,
@@ -87,10 +89,21 @@ export class SafetyPolicyService {
       errors.push("policy.secretRedactionPatterns must be an array.");
     }
 
+    if (!Array.isArray(policy.allowedPatterns)) {
+      errors.push("policy.allowedPatterns must be an array.");
+    }
+
+    if (
+      !Array.isArray(policy.requiredApprovalGates) ||
+      policy.requiredApprovalGates.length === 0
+    ) {
+      errors.push("policy.requiredApprovalGates must contain at least one gate.");
+    }
+
     for (const pattern of [
-      ...(policy.blockedPatterns ?? []),
-      ...(policy.allowedPatterns ?? []),
-      ...(policy.secretRedactionPatterns ?? [])
+      ...arrayOrEmpty(policy.blockedPatterns),
+      ...arrayOrEmpty(policy.allowedPatterns),
+      ...arrayOrEmpty(policy.secretRedactionPatterns)
     ]) {
       try {
         new RegExp(pattern);
@@ -103,9 +116,25 @@ export class SafetyPolicyService {
       warnings.push("Implementation handoff approval is not required by policy.");
     }
 
+    if (!policy.requiredApprovalGates?.includes("handoff")) {
+      warnings.push("Required approval gates do not include handoff.");
+    }
+
     if (!policy.workspaceBoundaryRequired) {
       warnings.push("Workspace boundary checks are disabled by policy.");
     }
+
+    if (policy.telemetryEnabled !== false) {
+      warnings.push("Telemetry should stay disabled for the internal local-first MVP.");
+    }
+
+    if (policy.localFirst !== true) {
+      warnings.push("Local-first operation is not explicitly required by policy.");
+    }
+
+    validateArtifactRetention(policy, errors, warnings);
+    validateAdminTemplatePaths(policy, errors);
+    validateTrustMetadata(policy, errors, warnings);
 
     return {
       ok: errors.length === 0,
@@ -119,10 +148,15 @@ export class SafetyPolicyService {
 
 export function createDefaultSafetyPolicy(): SafetyPolicy {
   const now = new Date().toISOString();
+  const trustMetadata = createTrustMetadata({
+    artifactKind: "safety-policy",
+    source: ".copilot-architect/policy.json"
+  });
 
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: now,
+    trust: trustMetadata,
     id: "default-safety-policy",
     name: "Default Safety Policy",
     defaultAllow: true,
@@ -130,7 +164,25 @@ export function createDefaultSafetyPolicy(): SafetyPolicy {
     allowedPatterns: [],
     secretRedactionPatterns: DEFAULT_SECRET_REDACTION_PATTERNS,
     requireApprovalForHandoff: true,
-    workspaceBoundaryRequired: true
+    workspaceBoundaryRequired: true,
+    requiredApprovalGates: [
+      "planning",
+      "handoff",
+      "validation-risk",
+      "agent-install",
+      "policy-change"
+    ],
+    telemetryEnabled: false,
+    localFirst: true,
+    artifactRetention: {
+      enabled: true,
+      maxAgeDays: 30,
+      maxRuns: 50,
+      directories: ["plans", "handoffs", "runs", "reviews", "diagnostics"],
+      dryRunDefault: true
+    },
+    adminAgentTemplatePaths: ["templates/agents", ".copilot-architect/agent-templates"],
+    trustMetadata
   };
 }
 
@@ -158,5 +210,106 @@ async function fileExists(filePath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+function arrayOrEmpty(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+
+function validateArtifactRetention(
+  policy: SafetyPolicy,
+  errors: string[],
+  warnings: string[]
+): void {
+  const retention = policy.artifactRetention;
+
+  if (!retention || typeof retention !== "object") {
+    errors.push("policy.artifactRetention is required.");
+    return;
+  }
+
+  if (typeof retention.enabled !== "boolean") {
+    errors.push("policy.artifactRetention.enabled must be a boolean.");
+  }
+
+  if (!Number.isFinite(retention.maxAgeDays) || retention.maxAgeDays < 0) {
+    errors.push("policy.artifactRetention.maxAgeDays must be zero or greater.");
+  }
+
+  if (!Number.isInteger(retention.maxRuns) || retention.maxRuns < 1) {
+    errors.push("policy.artifactRetention.maxRuns must be at least 1.");
+  }
+
+  if (!Array.isArray(retention.directories) || retention.directories.length === 0) {
+    errors.push(
+      "policy.artifactRetention.directories must contain at least one directory."
+    );
+  } else {
+    const knownDirectories = new Set<string>(Object.values(ARTIFACT_DIRECTORY_NAMES));
+
+    for (const directory of retention.directories) {
+      if (typeof directory !== "string" || !knownDirectories.has(directory)) {
+        errors.push(`Unknown artifact retention directory: ${String(directory)}.`);
+      }
+    }
+
+    if (retention.directories.includes("audit")) {
+      warnings.push(
+        "Audit log retention is enabled; preserve compliance evidence intentionally."
+      );
+    }
+  }
+
+  if (typeof retention.dryRunDefault !== "boolean") {
+    errors.push("policy.artifactRetention.dryRunDefault must be a boolean.");
+  }
+}
+
+function validateAdminTemplatePaths(policy: SafetyPolicy, errors: string[]): void {
+  if (!Array.isArray(policy.adminAgentTemplatePaths)) {
+    errors.push("policy.adminAgentTemplatePaths must be an array.");
+    return;
+  }
+
+  for (const templatePath of policy.adminAgentTemplatePaths) {
+    if (typeof templatePath !== "string" || templatePath.trim().length === 0) {
+      errors.push("policy.adminAgentTemplatePaths cannot contain empty entries.");
+    }
+  }
+}
+
+function validateTrustMetadata(
+  policy: SafetyPolicy,
+  errors: string[],
+  warnings: string[]
+): void {
+  const trust = policy.trustMetadata;
+
+  if (!trust || typeof trust !== "object") {
+    errors.push("policy.trustMetadata is required.");
+    return;
+  }
+
+  if (!trust.generatedBy) {
+    errors.push("policy.trustMetadata.generatedBy is required.");
+  }
+
+  if (!trust.policyId) {
+    errors.push("policy.trustMetadata.policyId is required.");
+  } else if (trust.policyId !== policy.id) {
+    warnings.push("policy.trustMetadata.policyId does not match policy.id.");
+  }
+
+  if (trust.telemetryEnabled !== policy.telemetryEnabled) {
+    warnings.push(
+      "policy.trustMetadata.telemetryEnabled does not match policy telemetry."
+    );
+  }
+
+  if (trust.localOnly !== policy.localFirst) {
+    warnings.push(
+      "policy.trustMetadata.localOnly does not match policy local-first setting."
+    );
   }
 }

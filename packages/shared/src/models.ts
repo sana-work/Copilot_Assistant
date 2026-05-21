@@ -20,8 +20,19 @@ export interface SchemaBacked {
   schemaVersion: string;
 }
 
+export interface TrustMetadata extends SchemaBacked {
+  generatedAt: string;
+  generatedBy: string;
+  policyId: string;
+  localOnly: boolean;
+  telemetryEnabled: boolean;
+  artifactKind?: string;
+  source?: string;
+}
+
 export interface GeneratedArtifact extends SchemaBacked {
   generatedAt: string;
+  trust?: TrustMetadata;
 }
 
 export interface RepoContext extends GeneratedArtifact {
@@ -181,6 +192,111 @@ export interface ImpactAnalysis {
   testGaps: string[];
 }
 
+export interface AdvancedAnalysis extends GeneratedArtifact {
+  repoRoot: string;
+  summary: string;
+  architecturePatterns: AdvancedArchitecturePattern[];
+  dependencyManifests: DependencyManifest[];
+  routes: RouteApiEndpoint[];
+  testRelationships: TestRelationship[];
+  riskScores: AdvancedRiskScore[];
+  diagnostics: RepoReadinessDiagnostic[];
+}
+
+export interface AdvancedArchitecturePattern {
+  name:
+    | "React app"
+    | "Angular app"
+    | "Node API"
+    | "Python service"
+    | "Java Spring service"
+    | "monorepo"
+    | "library/package"
+    | "CLI app";
+  confidence: ConfidenceLevel;
+  evidence: string[];
+}
+
+export interface DependencyManifest {
+  filePath: string;
+  ecosystem: "javascript" | "python" | "java";
+  packageManager?: string;
+  changed: boolean;
+  evidence: string[];
+}
+
+export interface RouteApiEndpoint {
+  kind:
+    | "express"
+    | "fastapi"
+    | "flask"
+    | "django"
+    | "spring"
+    | "angular"
+    | "react"
+    | "next";
+  method: string;
+  routePath: string;
+  filePath: string;
+  line?: number;
+  handler?: string;
+}
+
+export interface TestRelationship {
+  kind: "component" | "service" | "api-route";
+  sourceFile: string;
+  testFile?: string;
+  routePath?: string;
+  confidence: ConfidenceLevel;
+  reason: string;
+}
+
+export interface AdvancedRiskScore {
+  category:
+    | "security"
+    | "data-migration"
+    | "dependency"
+    | "multi-repo-impact"
+    | "missing-test";
+  level: Exclude<RiskLevel, "blocked">;
+  score: number;
+  reasons: string[];
+  mitigation?: string;
+}
+
+export interface PlanQualityScore {
+  score: number;
+  level: Exclude<RiskLevel, "blocked">;
+  checks: PlanQualityCheck[];
+  warnings: string[];
+}
+
+export interface PlanQualityCheck {
+  name:
+    | "context"
+    | "impacted-files"
+    | "validation-commands"
+    | "assumptions"
+    | "advanced-analysis";
+  passed: boolean;
+  score: number;
+  details: string;
+}
+
+export interface RepoReadinessDiagnostic {
+  code:
+    | "MISSING_PACKAGE_MANAGER"
+    | "MISSING_BUILD_SCRIPT"
+    | "MISSING_TESTS"
+    | "MISSING_REPO_MAP"
+    | "STALE_INDEX"
+    | "READY";
+  severity: Severity;
+  message: string;
+  recommendation?: string;
+  filePath?: string;
+}
+
 export interface FeaturePlan extends GeneratedArtifact {
   id: string;
   title: string;
@@ -252,6 +368,27 @@ export interface SafetyPolicy extends GeneratedArtifact {
   secretRedactionPatterns: string[];
   requireApprovalForHandoff: boolean;
   workspaceBoundaryRequired: boolean;
+  requiredApprovalGates: RequiredApprovalGate[];
+  telemetryEnabled: boolean;
+  localFirst: boolean;
+  artifactRetention: ArtifactRetentionPolicy;
+  adminAgentTemplatePaths: string[];
+  trustMetadata: TrustMetadata;
+}
+
+export type RequiredApprovalGate =
+  | "planning"
+  | "handoff"
+  | "validation-risk"
+  | "agent-install"
+  | "policy-change";
+
+export interface ArtifactRetentionPolicy {
+  enabled: boolean;
+  maxAgeDays: number;
+  maxRuns: number;
+  directories: string[];
+  dryRunDefault: boolean;
 }
 
 export interface CommandRiskAssessment extends GeneratedArtifact {

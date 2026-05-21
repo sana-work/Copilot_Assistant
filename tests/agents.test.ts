@@ -37,6 +37,9 @@ describe("AgentService", () => {
     expect(install.results.every((result) => result.status === "installed")).toBe(true);
     expect(validation.ok).toBe(true);
     expect(featureArchitect).toContain("---\nname: FeatureArchitect");
+    expect(featureArchitect).toContain("copilotArchitect/*");
+    expect(featureArchitect).toContain("handoffs:");
+    expect(featureArchitect).toContain("agent: FeatureImplementer");
     expect(featureArchitect).toContain("## Safety Rules");
     expect(featureArchitect).toContain(".copilot-architect/plans/latest-plan.md");
   });
@@ -98,5 +101,7 @@ describe("AgentService", () => {
     expect(report.summary).toContain("@FeatureArchitect");
     expect(report.summary).toContain("@FeatureImplementer");
     expect(report.summary).toContain("@CodeReviewer");
+    expect(report.summary).toContain("@Debugger");
+    expect(report.checks.map((check) => check.name)).toContain("mcp-config");
   });
 });

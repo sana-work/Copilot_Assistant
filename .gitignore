@@ -3,6 +3,8 @@ coverage/
 dist/
 packages/*/dist/
 .copilot-architect/
+**/.copilot-architect/
+**/.pytest_cache/
 .DS_Store
 *.log
 *.tsbuildinfo

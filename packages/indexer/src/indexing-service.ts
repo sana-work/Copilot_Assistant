@@ -41,7 +41,7 @@ const PREVIEW_LENGTH = 2_000;
 export class IndexingService {
   async index(options: IndexOptions = {}): Promise<IndexResult> {
     const startPath = path.resolve(options.startPath ?? process.cwd());
-    const repoRoot = await findRepoRoot(startPath);
+    const repoRoot = await resolveRepoRoot(startPath, options.strictRoot);
     const indexPath = getIndexPath(repoRoot);
     const statusPath = getStatusPath(repoRoot);
     const existingIndex =
@@ -74,8 +74,8 @@ export class IndexingService {
 
   async search(options: SearchOptions): Promise<SearchResponse> {
     const startPath = path.resolve(options.startPath ?? process.cwd());
-    const repoRoot = await findRepoRoot(startPath);
-    const index = await this.readOrCreateIndex(repoRoot);
+    const repoRoot = await resolveRepoRoot(startPath, options.strictRoot);
+    const index = await this.readOrCreateIndex(repoRoot, options.strictRoot);
     const results = searchIndex(index, options.query, options.limit ?? 20);
 
     return {
@@ -168,14 +168,17 @@ export class IndexingService {
     };
   }
 
-  private async readOrCreateIndex(repoRoot: string): Promise<LocalIndex> {
+  private async readOrCreateIndex(
+    repoRoot: string,
+    strictRoot?: boolean
+  ): Promise<LocalIndex> {
     const index = await tryReadIndex(getIndexPath(repoRoot));
 
     if (index) {
       return index;
     }
 
-    return (await this.index({ startPath: repoRoot })).index;
+    return (await this.index({ startPath: repoRoot, strictRoot })).index;
   }
 }
 
@@ -523,6 +526,18 @@ async function findRepoRoot(startPath: string): Promise<string> {
   }
 }
 
+async function resolveRepoRoot(
+  startPath: string,
+  strictRoot: boolean | undefined
+): Promise<string> {
+  if (!strictRoot) {
+    return findRepoRoot(startPath);
+  }
+
+  const startStats = await stat(startPath);
+  return startStats.isDirectory() ? startPath : path.dirname(startPath);
+}
+
 async function tryReadIndex(indexPath: string): Promise<LocalIndex | undefined> {
   try {
     return await readJsonFile<LocalIndex>(indexPath);
@@ -665,6 +680,7 @@ const ignoredNames = new Set([
   ".venv",
   "venv",
   "__pycache__",
+  ".pytest_cache",
   "vendor",
   ".idea",
   ".vscode",

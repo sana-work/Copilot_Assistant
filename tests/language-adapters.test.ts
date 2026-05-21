@@ -78,10 +78,10 @@ describe("Phase 4 language and toolchain adapters", () => {
       expect.arrayContaining(["Angular", "Angular CLI"])
     );
     expect(result.merged.commands.build).toContainEqual(
-      expect.objectContaining({ command: "ng", args: ["build"] })
+      expect.objectContaining({ command: "npm", args: ["run", "build"] })
     );
     expect(result.merged.commands.test).toContainEqual(
-      expect.objectContaining({ command: "ng", args: ["test"] })
+      expect.objectContaining({ command: "npm", args: ["test"] })
     );
     expect(result.merged.featurePatterns.map((pattern) => pattern.id)).toEqual(
       expect.arrayContaining([
@@ -115,7 +115,6 @@ describe("Phase 4 language and toolchain adapters", () => {
     expect(result.merged.commands.test).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ command: "pytest", args: [] }),
-        expect.objectContaining({ command: "python", args: ["-m", "pytest"] }),
         expect.objectContaining({ command: "poetry", args: ["run", "pytest"] })
       ])
     );
@@ -137,12 +136,11 @@ describe("Phase 4 language and toolchain adapters", () => {
     ]);
     expect(result.merged.commands.test).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ command: "mvn", args: ["test"] }),
         expect.objectContaining({ command: "./mvnw", args: ["test"] })
       ])
     );
     expect(result.merged.commands.build).toContainEqual(
-      expect.objectContaining({ command: "mvn", args: ["package"] })
+      expect.objectContaining({ command: "./mvnw", args: ["package"] })
     );
   });
 
@@ -159,13 +157,11 @@ describe("Phase 4 language and toolchain adapters", () => {
     ]);
     expect(result.merged.commands.test).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ command: "gradle", args: ["test"] }),
         expect.objectContaining({ command: "./gradlew", args: ["test"] })
       ])
     );
     expect(result.merged.commands.build).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ command: "gradle", args: ["build"] }),
         expect.objectContaining({ command: "./gradlew", args: ["build"] })
       ])
     );

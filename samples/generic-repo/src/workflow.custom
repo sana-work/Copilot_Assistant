@@ -1,0 +1,6 @@
+include invoice.rules
+
+workflow invoice_approval {
+  step validate
+  step approve
+}

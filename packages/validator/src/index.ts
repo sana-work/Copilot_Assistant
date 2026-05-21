@@ -1,3 +1,4 @@
+export * from "./artifact-cleanup-service.js";
 export * from "./command-config-service.js";
 export * from "./audit-log-service.js";
 export * from "./command-risk-assessment-service.js";

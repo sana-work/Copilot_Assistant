@@ -35,6 +35,33 @@ export function renderFeaturePlanMarkdown(plan: FeaturePlanArtifact): string {
     "## Impacted Modules And Folders",
     renderBullets(plan.impactedModules),
     "",
+    "## Advanced Architecture Signals",
+    renderBullets(
+      plan.advancedAnalysis.architecturePatterns.map(
+        (pattern) =>
+          `${pattern.name} (${pattern.confidence}): ${pattern.evidence.join(", ")}`
+      )
+    ),
+    "",
+    "## Detected Routes And APIs",
+    renderBullets(
+      plan.advancedAnalysis.routes.map(
+        (route) =>
+          `${route.kind} ${route.method} ${route.routePath} in \`${route.filePath}\``
+      )
+    ),
+    "",
+    "## Test Relationships",
+    renderBullets(
+      plan.advancedAnalysis.testRelationships
+        .slice(0, 12)
+        .map((relationship) =>
+          relationship.testFile
+            ? `${relationship.kind}: \`${relationship.sourceFile}\` -> \`${relationship.testFile}\``
+            : `${relationship.kind}: \`${relationship.sourceFile}\` has no nearby test`
+        )
+    ),
+    "",
     "## Likely Files To Modify",
     renderBullets(plan.likelyFilesToModify),
     "",
@@ -63,6 +90,36 @@ export function renderFeaturePlanMarkdown(plan: FeaturePlanArtifact): string {
     renderBullets(
       plan.validationPlan.commands.map((command) =>
         [command.command, ...command.args].join(" ")
+      )
+    ),
+    "",
+    "## Risk Scores",
+    renderBullets(
+      plan.riskScores.map(
+        (risk) =>
+          `${risk.category}: ${risk.level} (${risk.score}/100). ${risk.reasons.join(" ")}`
+      )
+    ),
+    "",
+    "## Plan Quality",
+    renderBullets([
+      `Score: ${plan.planQuality.score}/100 (${plan.planQuality.level} risk)`,
+      ...plan.planQuality.checks.map(
+        (check) =>
+          `${check.name}: ${check.passed ? "passed" : "needs attention"} - ${check.details}`
+      ),
+      ...plan.planQuality.warnings.map((warning) => `Warning: ${warning}`)
+    ]),
+    "",
+    "## Repo Readiness Diagnostics",
+    renderBullets(
+      plan.readinessDiagnostics.map(
+        (diagnostic) =>
+          `${diagnostic.severity}: ${diagnostic.code} - ${diagnostic.message}${
+            diagnostic.recommendation
+              ? ` Recommendation: ${diagnostic.recommendation}`
+              : ""
+          }`
       )
     ),
     "",

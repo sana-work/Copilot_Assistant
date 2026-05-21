@@ -154,7 +154,7 @@ export class JavaAdapter
   detectBuildCommands(context: AdapterContext): BuildCommand[] {
     const commands: BuildCommand[] = [];
 
-    if (context.hasFile("pom.xml")) {
+    if (context.hasFile("pom.xml") && !context.hasFile("mvnw")) {
       commands.push({
         kind: "build",
         name: "mvn package",
@@ -176,7 +176,10 @@ export class JavaAdapter
       });
     }
 
-    if (context.hasFile("build.gradle") || context.hasFile("build.gradle.kts")) {
+    if (
+      (context.hasFile("build.gradle") || context.hasFile("build.gradle.kts")) &&
+      !context.hasFile("gradlew")
+    ) {
       commands.push({
         kind: "build",
         name: "gradle build",
@@ -204,7 +207,7 @@ export class JavaAdapter
   detectTestCommands(context: AdapterContext): TestCommand[] {
     const commands: TestCommand[] = [];
 
-    if (context.hasFile("pom.xml")) {
+    if (context.hasFile("pom.xml") && !context.hasFile("mvnw")) {
       commands.push({
         kind: "test",
         name: "mvn test",
@@ -226,7 +229,10 @@ export class JavaAdapter
       });
     }
 
-    if (context.hasFile("build.gradle") || context.hasFile("build.gradle.kts")) {
+    if (
+      (context.hasFile("build.gradle") || context.hasFile("build.gradle.kts")) &&
+      !context.hasFile("gradlew")
+    ) {
       commands.push({
         kind: "test",
         name: "gradle test",

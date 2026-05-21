@@ -116,6 +116,48 @@ Support `.copilot-architect/workspace.json` with named repos, paths, and roles; 
 
 Status: implemented with `WorkspaceService` config parsing and repo management, workspace-level repo-map generation, `IndexingService.indexWorkspace` and `searchWorkspace`, `WorkspacePlanningService` cross-repo impact and `multiRepo` plan augmentation, CLI `workspace list/remove` plus enhanced add/index/search/impact/plan/validate-plan behavior, and MCP `workspace_map`, `search_across_repos`, and `analyze_cross_repo_impact` tools.
 
+## Phase 20 - Internal Team Controls
+
+Add team-friendly setup scripts, local-first policy controls, command allow/block lists, required approval gates, telemetry disabled by default, artifact retention cleanup, secret redaction, admin-configurable agent template paths, trust metadata for generated files, and CLI `doctor`, `status`, `policy show`, `policy validate`, `audit list`, and `cleanup` coverage.
+
+Status: implemented with expanded `.copilot-architect/policy.json` defaults and validation, `ArtifactCleanupService`, dry-run/apply cleanup CLI, enriched status and doctor output, redacted cleanup audit entries, generated trust metadata in agents/instructions/policy, policy-driven admin agent templates, and cross-platform setup/check-env scripts.
+
+## Phase 21 - Advanced Intelligence Additions
+
+Add local-first architecture pattern detection, dependency manifest detection, route/API detection, test relationship detection, risk scoring, plan quality scoring, and repo readiness diagnostics.
+
+Status: implemented with `AdvancedAnalysisService`, CLI `diagnostics`, plan-embedded advanced analysis/risk scores/quality checks/readiness diagnostics, and tests covering React, Angular, Python, and Java sample repos.
+
+## Phase 22 - Testing Matrix And Sample Repos
+
+Create representative sample repos for React, Angular, Python, Java Maven, Java Gradle, Node API, polyglot monorepo, and generic fallback support. Add tests for adapter detection, repo discovery, indexing, search, planning, validation command detection, safety blocking, MCP, agents, instructions, handoff, review, workspace support, CLI commands, and the MVP e2e flow. Add CI coverage.
+
+Status: implemented with the `samples/` matrix, `tests/sample-matrix.test.ts`, an end-to-end CLI flow from analyze through review, and `.github/workflows/ci.yml`.
+
+## Phase 23 - Packaging For Internal Sharing
+
+Add clone-friendly install docs, npm link guidance, optional local tarball packaging, release artifacts, version command, changelog, troubleshooting guide, and upgrade guide for internal team distribution.
+
+Status: implemented with `npm run cli -- version`, enhanced `doctor` packaging guidance, `npm run package:local`, `.npmignore`, `scripts/package-local.mjs`, root `CHANGELOG.md`, and internal installation, setup, troubleshooting, and upgrade docs.
+
+## Phase 24 - MVP Definition And Lock
+
+Lock the MVP boundary around the required TypeScript CLI, repo discovery, adapters, local indexing/search, planning, command config, validation, safety, MCP, agents, instructions, handoff, review, multi-repo basics, VS Code shell, and internal setup docs. Document explicit non-goals and require tests to keep proving the MVP path before new major scope is added.
+
+Status: implemented in `docs/MVP_DEFINITION.md` with the exact required capability list, non-goals, MVP user path, lock rules, acceptance gates, and tests that enforce the documented boundary.
+
+## Phase 25 - Development Governance
+
+Add execution rules, PR guardrails, CI/release validation, and tests that keep MVP development disciplined.
+
+Status: implemented with mandatory governance rules in `docs/DEVELOPMENT_EXECUTION_INSTRUCTIONS.md`, `.github/pull_request_template.md`, `.github/workflows/ci.yml`, `.github/workflows/release-check.yml`, and governance tests that validate the artifacts.
+
+## Phase 26 - End-To-End MVP Validation
+
+Prove the locked MVP works across representative React, Angular, Python, Java, polyglot, MCP, agents/instructions, safety, and review workflows without adding major new scope.
+
+Status: implemented with strict `--root` support for nested sample validation, clean-machine command detection fixes, `docs/PHASE_26_VALIDATION_REPORT.md`, and regression coverage in `tests/phase26-validation.test.ts`.
+
 ## Later Optional Features
 
 - Enterprise policy packs.

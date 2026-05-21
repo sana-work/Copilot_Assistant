@@ -24,6 +24,7 @@ export interface RepoDiscoveryOptions {
   startPath?: string;
   outputPath?: string;
   maxFileBytes?: number;
+  strictRoot?: boolean;
 }
 
 export interface RepoDiscoveryResult {
@@ -35,7 +36,9 @@ export interface RepoDiscoveryResult {
 export class RepoDiscoveryService {
   async analyze(options: RepoDiscoveryOptions = {}): Promise<RepoDiscoveryResult> {
     const startPath = path.resolve(options.startPath ?? process.cwd());
-    const repoRoot = await findRepoRoot(startPath);
+    const repoRoot = options.strictRoot
+      ? await normalizeRepoRoot(startPath)
+      : await findRepoRoot(startPath);
     const files = await scanRepoFiles(repoRoot, options.maxFileBytes);
     const adapterContext: AdapterContextInput = {
       repoRoot,
@@ -80,6 +83,11 @@ async function writeRepoMap(
   await ensureArtifactDirectories(repoRoot);
   await writeJsonFile(defaultPath, repoMap);
   await writeJsonFile(repoMapPath, repoMap);
+}
+
+async function normalizeRepoRoot(startPath: string): Promise<string> {
+  const startStats = await stat(startPath);
+  return startStats.isDirectory() ? startPath : path.dirname(startPath);
 }
 
 async function findRepoRoot(startPath: string): Promise<string> {
@@ -449,6 +457,7 @@ const ignoredNames = new Set([
   ".venv",
   "venv",
   "__pycache__",
+  ".pytest_cache",
   "vendor",
   ".idea",
   ".vscode",

@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { AgentService } from "@copilot-architect/agents";
 import { RepoDiscoveryService, WorkspaceService } from "@copilot-architect/core";
 import { IndexingService } from "@copilot-architect/indexer";
 import {
@@ -305,13 +306,11 @@ export function createCopilotArchitectTools(
     ),
     tool(
       "agent_status",
-      "Report agent package status.",
+      "Report Copilot Architect custom agent and MCP readiness.",
       commonSchema,
       true,
-      async () => ({
-        status: "not-implemented",
-        message: "Agent generation is planned for a later phase."
-      })
+      async (args) =>
+        new AgentService().doctor({ startPath: resolveStartPath(args, options) })
     )
   ];
 }

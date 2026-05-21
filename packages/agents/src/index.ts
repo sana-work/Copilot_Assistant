@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -6,6 +7,11 @@ import {
   type AgentInstallResult,
   type AgentTemplate,
   type DiagnosticReport,
+  type SafetyPolicy,
+  type TrustMetadata,
+  createTrustMetadata,
+  getArtifactFilePath,
+  readJsonFile,
   writeJsonFile
 } from "@copilot-architect/shared";
 
@@ -22,6 +28,7 @@ export interface AgentInstallOptions extends AgentServiceOptions {
 export interface AgentInstallSummary {
   schemaVersion: string;
   generatedAt: string;
+  trust: TrustMetadata;
   outputDirectory: string;
   dryRun: boolean;
   force: boolean;
@@ -54,10 +61,31 @@ interface AgentDefinition {
   description: string;
   model: string;
   tools: string[];
+  handoffs?: AgentHandoffDefinition[];
   purpose: string;
   instructions: string[];
   handoffGuidance: string[];
   safetyRules: string[];
+}
+
+interface AgentHandoffDefinition {
+  label: string;
+  agent: string;
+  prompt: string;
+  send?: boolean;
+}
+
+interface AgentDoctorOptions {
+  startPath?: string;
+  outputPath?: string;
+  nodeVersion?: string;
+}
+
+interface AdminAgentTemplate {
+  id: string;
+  fileName: string;
+  sourcePath: string;
+  contents: string;
 }
 
 const requiredSectionHeadings = [
@@ -77,11 +105,21 @@ const agentDefinitions: AgentDefinition[] = [
       "Analyze the repository, find similar patterns, and produce detailed implementation plans without editing code.",
     model: "gpt-5.2",
     tools: [
+      "copilotArchitect/*",
       "repo_map",
       "workspace_map",
       "search_repo",
       "find_similar_feature",
       "generate_plan_context"
+    ],
+    handoffs: [
+      {
+        label: "Start Implementation",
+        agent: "FeatureImplementer",
+        prompt:
+          "Implement the approved plan from .copilot-architect/plans/latest-plan.md. Run validation commands and summarize changed files.",
+        send: false
+      }
     ],
     purpose:
       "Analyze the repo, understand the request, find similar patterns, and produce detailed implementation plans. Must not edit code.",
@@ -109,11 +147,23 @@ const agentDefinitions: AgentDefinition[] = [
       "Implement only an approved plan with minimal scoped changes, tests, and validation evidence.",
     model: "gpt-5.2",
     tools: [
+      "copilotArchitect/*",
+      "edit",
+      "search/codebase",
       "repo_map",
       "search_repo",
       "get_latest_plan",
       "get_validation_commands",
       "get_safety_policy"
+    ],
+    handoffs: [
+      {
+        label: "Review Changes",
+        agent: "CodeReviewer",
+        prompt:
+          "Review the git diff against the approved plan and latest validation report.",
+        send: false
+      }
     ],
     purpose:
       "Implement only an approved plan. Must keep changes minimal, update tests, and run validation.",
@@ -141,10 +191,21 @@ const agentDefinitions: AgentDefinition[] = [
       "Review implementation against the approved plan and validation evidence.",
     model: "gpt-5.2",
     tools: [
+      "copilotArchitect/*",
+      "search/codebase",
       "get_latest_plan",
       "get_latest_validation",
       "get_latest_review",
       "repo_map"
+    ],
+    handoffs: [
+      {
+        label: "Debug Validation Failure",
+        agent: "Debugger",
+        prompt:
+          "Validation failed. Use .copilot-architect/runs/latest-validation.json and related logs to classify the failure and propose the smallest safe fix.",
+        send: false
+      }
     ],
     purpose:
       "Review implementation against approved plan. Must flag unexpected changes, missing tests, validation failures, security risks, and performance risks.",
@@ -170,6 +231,7 @@ const agentDefinitions: AgentDefinition[] = [
     description: "Identify the test coverage needed for a feature.",
     model: "gpt-5.2",
     tools: [
+      "copilotArchitect/*",
       "repo_map",
       "search_repo",
       "find_impacted_files",
@@ -197,7 +259,15 @@ const agentDefinitions: AgentDefinition[] = [
     name: "Debugger",
     description: "Analyze build, test, lint, and format failures and propose fixes.",
     model: "gpt-5.2",
-    tools: ["get_latest_validation", "search_repo", "repo_map", "get_safety_policy"],
+    tools: [
+      "copilotArchitect/*",
+      "edit",
+      "search/codebase",
+      "get_latest_validation",
+      "search_repo",
+      "repo_map",
+      "get_safety_policy"
+    ],
     purpose: "Analyze build/test/lint failures and propose fixes.",
     instructions: [
       "Start from `.copilot-architect/runs/latest-validation.json` and related logs.",
@@ -220,7 +290,13 @@ const agentDefinitions: AgentDefinition[] = [
     name: "SecurityReviewer",
     description: "Review code changes for security issues.",
     model: "gpt-5.2",
-    tools: ["repo_map", "get_latest_plan", "get_latest_review", "search_repo"],
+    tools: [
+      "copilotArchitect/*",
+      "repo_map",
+      "get_latest_plan",
+      "get_latest_review",
+      "search_repo"
+    ],
     purpose: "Review code changes for security issues.",
     instructions: [
       "Inspect changed authentication, authorization, input handling, secrets, logging, and data access behavior.",
@@ -243,7 +319,13 @@ const agentDefinitions: AgentDefinition[] = [
     name: "PerformanceReviewer",
     description: "Review potential performance risks in code changes.",
     model: "gpt-5.2",
-    tools: ["repo_map", "get_latest_plan", "get_latest_review", "search_repo"],
+    tools: [
+      "copilotArchitect/*",
+      "repo_map",
+      "get_latest_plan",
+      "get_latest_review",
+      "search_repo"
+    ],
     purpose: "Review potential performance risks.",
     instructions: [
       "Look for changed loops, queries, network calls, rendering paths, caching, and large file operations.",
@@ -303,14 +385,27 @@ export class AgentService {
     };
   }
 
-  doctor(nodeVersion = process.version): DiagnosticReport {
+  doctor(input: string | AgentDoctorOptions = {}): DiagnosticReport {
+    const options: AgentDoctorOptions =
+      typeof input === "string" ? { nodeVersion: input } : input;
+    const nodeVersion = options.nodeVersion ?? process.version;
+    const outputDirectory = resolveOutputDirectory(options);
+    const agentReadiness = inspectAgentDirectory(outputDirectory);
+    const mcpReadiness = inspectMcpConfig(resolveStartPath(options.startPath));
+    const status =
+      agentReadiness.status === "error" || mcpReadiness.status === "error"
+        ? "error"
+        : agentReadiness.status === "warning" || mcpReadiness.status === "warning"
+          ? "warning"
+          : "ok";
+
     return {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       id: "agents-doctor",
-      status: "ok",
+      status,
       summary:
-        "Use @FeatureArchitect for planning, @FeatureImplementer for approved implementation, and @CodeReviewer for review.",
+        "Use @FeatureArchitect for planning, @FeatureImplementer for approved implementation, @CodeReviewer for review, and @Debugger when validation fails.",
       environment: {
         nodeVersion,
         packageManager: "npm",
@@ -334,9 +429,26 @@ export class AgentService {
           message: "Use after implementation and validation evidence are available."
         },
         {
-          name: "agent-files",
+          name: "@Debugger",
           status: "ok",
-          message: "Install with `npm run cli -- agents install`."
+          message:
+            "Use when latest validation failed and a focused fix prompt is needed."
+        },
+        {
+          name: "agent-files",
+          status: agentReadiness.status,
+          message: agentReadiness.message
+        },
+        {
+          name: "mcp-config",
+          status: mcpReadiness.status,
+          message: mcpReadiness.message
+        },
+        {
+          name: "mcp-command",
+          status: "ok",
+          message:
+            "Start the local MCP server with `npm run cli -- mcp`; configure Copilot Chat with `.vscode/mcp.json`."
         }
       ],
       artifactRoot: ".github/agents"
@@ -346,6 +458,7 @@ export class AgentService {
   private async writeAgents(
     options: AgentInstallOptions
   ): Promise<AgentInstallSummary> {
+    const repoRoot = resolveStartPath(options.startPath);
     const outputDirectory = resolveOutputDirectory(options);
     const results: AgentInstallResult[] = [];
 
@@ -418,9 +531,19 @@ export class AgentService {
       );
     }
 
+    const adminTemplates = await loadAdminAgentTemplates(repoRoot);
+
+    for (const template of adminTemplates) {
+      results.push(await writeAdminAgentTemplate(outputDirectory, template, options));
+    }
+
     const summary: AgentInstallSummary = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
+      trust: createTrustMetadata({
+        artifactKind: "agent-install-summary",
+        source: outputDirectory
+      }),
       outputDirectory,
       dryRun: options.dryRun ?? false,
       force: options.force ?? false,
@@ -443,6 +566,10 @@ function toTemplate(definition: AgentDefinition): AgentTemplate {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
+    trust: createTrustMetadata({
+      artifactKind: "agent-template",
+      source: definition.fileName
+    }),
     id: definition.id,
     name: definition.name,
     description: definition.description,
@@ -468,6 +595,10 @@ function createInstallResult(
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
+    trust: createTrustMetadata({
+      artifactKind: "agent-install-result",
+      source: input.installPath
+    }),
     agentId: definition.id,
     status: input.status,
     installPath: input.installPath,
@@ -477,6 +608,11 @@ function createInstallResult(
 }
 
 function renderAgent(definition: AgentDefinition): string {
+  const trust = createTrustMetadata({
+    artifactKind: "copilot-agent",
+    source: definition.fileName
+  });
+
   return [
     "---",
     `name: ${definition.name}`,
@@ -484,6 +620,17 @@ function renderAgent(definition: AgentDefinition): string {
     `model: ${definition.model}`,
     "tools:",
     ...definition.tools.map((tool) => `  - ${tool}`),
+    ...(definition.handoffs?.length
+      ? [
+          "handoffs:",
+          ...definition.handoffs.flatMap((handoff) => [
+            `  - label: ${handoff.label}`,
+            `    agent: ${handoff.agent}`,
+            `    prompt: ${JSON.stringify(handoff.prompt)}`,
+            `    send: ${handoff.send === true ? "true" : "false"}`
+          ])
+        ]
+      : []),
     "---",
     "",
     `# ${definition.name}`,
@@ -500,9 +647,20 @@ function renderAgent(definition: AgentDefinition): string {
     "",
     ...definition.handoffGuidance.map((guidance) => `- ${guidance}`),
     "",
+    "## Copilot Chat Prompts",
+    "",
+    ...chatPromptExamples(definition).map((prompt) => `- ${prompt}`),
+    "",
     "## Safety Rules",
     "",
     ...definition.safetyRules.map((rule) => `- ${rule}`),
+    "",
+    "## Trust Metadata",
+    "",
+    `- Generated by: ${trust.generatedBy}`,
+    `- Policy: ${trust.policyId}`,
+    `- Local only: ${trust.localOnly ? "yes" : "no"}`,
+    `- Telemetry enabled: ${trust.telemetryEnabled ? "yes" : "no"}`,
     "",
     "## Copilot Architect Artifacts",
     "",
@@ -566,6 +724,31 @@ function validateAgentText(filePath: string, text: string): AgentValidationFileR
     errors.push("Missing references to .copilot-architect artifacts.");
   }
 
+  if (
+    path.basename(filePath) === "FeatureArchitect.agent.md" &&
+    !text.includes("agent: FeatureImplementer")
+  ) {
+    errors.push("FeatureArchitect must hand off to FeatureImplementer.");
+  }
+
+  if (
+    path.basename(filePath) === "FeatureImplementer.agent.md" &&
+    !text.includes("agent: CodeReviewer")
+  ) {
+    errors.push("FeatureImplementer must hand off to CodeReviewer.");
+  }
+
+  if (
+    path.basename(filePath) === "CodeReviewer.agent.md" &&
+    !text.includes("agent: Debugger")
+  ) {
+    errors.push("CodeReviewer must hand off to Debugger for validation failures.");
+  }
+
+  if (!text.includes("## Trust Metadata")) {
+    warnings.push("Agent file should include trust metadata for generated content.");
+  }
+
   if (!path.basename(filePath).endsWith(".agent.md")) {
     warnings.push("Agent file should use the .agent.md suffix.");
   }
@@ -587,6 +770,122 @@ function parseFrontmatter(text: string): string | undefined {
   return endIndex === -1 ? undefined : text.slice(4, endIndex);
 }
 
+function chatPromptExamples(definition: AgentDefinition): string[] {
+  if (definition.name === "FeatureArchitect") {
+    return [
+      "`@FeatureArchitect Add [feature] based on this repo. Use Copilot Architect repo map, index, MCP tools, and latest generated plan. Do not modify code yet. First create a detailed implementation plan.`"
+    ];
+  }
+
+  if (definition.name === "FeatureImplementer") {
+    return [
+      "`@FeatureImplementer Implement the approved plan from .copilot-architect/plans/latest-plan.md. Run validation commands and summarize changed files.`"
+    ];
+  }
+
+  if (definition.name === "CodeReviewer") {
+    return [
+      "`@CodeReviewer Review the git diff against the approved plan and latest validation report.`"
+    ];
+  }
+
+  if (definition.name === "Debugger") {
+    return [
+      "`@Debugger Validation failed. Use .copilot-architect/runs/latest-validation.json and related logs to classify the failure and propose the smallest safe fix.`"
+    ];
+  }
+
+  return [
+    `\`@${definition.name} Use Copilot Architect artifacts and MCP tools for this repo-aware workflow.\``
+  ];
+}
+
+function inspectAgentDirectory(directory: string): {
+  status: "ok" | "warning" | "error";
+  message: string;
+} {
+  try {
+    const files = readdirSync(directory)
+      .filter((fileName) => fileName.endsWith(".agent.md"))
+      .map((fileName) => path.join(directory, fileName));
+
+    if (files.length === 0) {
+      return {
+        status: "warning",
+        message: "No .agent.md files found. Run `npm run cli -- agents install`."
+      };
+    }
+
+    const invalid = files
+      .map((filePath) => validateAgentText(filePath, readFileSync(filePath, "utf8")))
+      .filter((result) => !result.ok);
+
+    if (invalid.length > 0) {
+      return {
+        status: "error",
+        message: `${invalid.length} invalid agent file(s) found under ${directory}.`
+      };
+    }
+
+    return {
+      status: "ok",
+      message: `Found ${files.length} valid Copilot agent file(s) under ${directory}.`
+    };
+  } catch {
+    return {
+      status: "warning",
+      message: "Agent directory is missing. Run `npm run cli -- agents install`."
+    };
+  }
+}
+
+function inspectMcpConfig(repoRoot: string): {
+  status: "ok" | "warning" | "error";
+  message: string;
+} {
+  const configPath = path.join(repoRoot, ".vscode", "mcp.json");
+
+  if (!existsSync(configPath)) {
+    return {
+      status: "warning",
+      message:
+        "Copilot Chat MCP config is missing. Run `npm run cli -- mcp config --path <repo>`."
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
+      servers?: Record<string, { type?: string; command?: string; args?: string[] }>;
+    };
+    const server = parsed.servers?.copilotArchitect;
+
+    if (!server) {
+      return {
+        status: "warning",
+        message: "MCP config exists but does not include the copilotArchitect server."
+      };
+    }
+
+    if (server.type !== "stdio" || !server.command || !Array.isArray(server.args)) {
+      return {
+        status: "error",
+        message:
+          "copilotArchitect MCP server config must use stdio with command and args."
+      };
+    }
+
+    return {
+      status: "ok",
+      message: "Copilot Chat MCP config includes a copilotArchitect stdio server."
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: `Unable to parse .vscode/mcp.json: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
 async function backupFile(filePath: string): Promise<string> {
   const backupPath = `${filePath}.${timestampId()}.bak`;
   await writeFile(backupPath, await readFile(filePath, "utf8"), "utf8");
@@ -603,7 +902,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 function resolveOutputDirectory(options: AgentServiceOptions): string {
-  const repoRoot = path.resolve(options.startPath ?? process.cwd());
+  const repoRoot = resolveStartPath(options.startPath);
 
   if (options.outputPath) {
     return path.isAbsolute(options.outputPath)
@@ -612,6 +911,123 @@ function resolveOutputDirectory(options: AgentServiceOptions): string {
   }
 
   return path.join(repoRoot, ".github", "agents");
+}
+
+function resolveStartPath(startPath?: string): string {
+  return path.resolve(startPath ?? process.cwd());
+}
+
+async function loadAdminAgentTemplates(
+  repoRoot: string
+): Promise<AdminAgentTemplate[]> {
+  const policy = await tryReadPolicy(repoRoot);
+  const templatePaths = policy?.adminAgentTemplatePaths ?? [
+    "templates/agents",
+    ".copilot-architect/agent-templates"
+  ];
+  const templates: AdminAgentTemplate[] = [];
+
+  for (const templatePath of templatePaths) {
+    const directoryPath = path.isAbsolute(templatePath)
+      ? templatePath
+      : path.resolve(repoRoot, templatePath);
+    const files = await findAgentFiles(directoryPath);
+
+    for (const filePath of files) {
+      templates.push({
+        id: `admin-${path.basename(filePath, ".agent.md")}`,
+        fileName: path.basename(filePath),
+        sourcePath: filePath,
+        contents: await readFile(filePath, "utf8")
+      });
+    }
+  }
+
+  return templates;
+}
+
+async function tryReadPolicy(repoRoot: string): Promise<SafetyPolicy | undefined> {
+  try {
+    return await readJsonFile<SafetyPolicy>(getArtifactFilePath(repoRoot, "policy"));
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeAdminAgentTemplate(
+  outputDirectory: string,
+  template: AdminAgentTemplate,
+  options: AgentInstallOptions
+): Promise<AgentInstallResult> {
+  const installPath = path.join(outputDirectory, template.fileName);
+  const exists = await pathExists(installPath);
+
+  if (options.dryRun) {
+    return createAdminInstallResult(template, {
+      status: exists && !options.force ? "skipped" : exists ? "updated" : "installed",
+      installPath,
+      messages: [
+        `Dry run: ${exists ? "would update" : "would install"} admin template ${template.fileName}.`
+      ]
+    });
+  }
+
+  if (exists && !options.force) {
+    return createAdminInstallResult(template, {
+      status: "skipped",
+      installPath,
+      messages: [
+        `${template.fileName} already exists. Re-run with --force or agents update to overwrite with backup.`
+      ]
+    });
+  }
+
+  const backupPath = exists ? await backupFile(installPath) : undefined;
+  const validation = validateAgentText(installPath, template.contents);
+
+  if (!validation.ok) {
+    return createAdminInstallResult(template, {
+      status: "failed",
+      installPath,
+      backupPath,
+      messages: validation.errors
+    });
+  }
+
+  await writeFile(installPath, template.contents, "utf8");
+
+  return createAdminInstallResult(template, {
+    status: exists ? "updated" : "installed",
+    installPath,
+    backupPath,
+    messages: [
+      `${exists ? "Updated" : "Installed"} admin template ${template.fileName} from ${template.sourcePath}.`
+    ]
+  });
+}
+
+function createAdminInstallResult(
+  template: AdminAgentTemplate,
+  input: {
+    status: AgentInstallResult["status"];
+    installPath: string;
+    backupPath?: string;
+    messages: string[];
+  }
+): AgentInstallResult {
+  return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    trust: createTrustMetadata({
+      artifactKind: "admin-agent-install-result",
+      source: template.sourcePath
+    }),
+    agentId: template.id,
+    status: input.status,
+    installPath: input.installPath,
+    backupPath: input.backupPath,
+    messages: input.messages
+  };
 }
 
 function timestampId(): string {

@@ -16,7 +16,8 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
-    "cli": "node packages/cli/dist/index.js"
+    "cli": "node packages/cli/dist/index.js",
+    "package:local": "node scripts/package-local.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

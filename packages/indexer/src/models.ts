@@ -54,6 +54,7 @@ export interface IndexStatus {
 
 export interface IndexOptions {
   startPath?: string;
+  strictRoot?: boolean;
   rebuild?: boolean;
   maxFileBytes?: number;
 }
@@ -68,6 +69,7 @@ export interface IndexResult {
 
 export interface SearchOptions {
   startPath?: string;
+  strictRoot?: boolean;
   query: string;
   limit?: number;
 }
@@ -96,6 +98,7 @@ export interface SearchResponse {
 
 export interface SimilarFeatureOptions {
   startPath?: string;
+  strictRoot?: boolean;
   query: string;
   limit?: number;
 }

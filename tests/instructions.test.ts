@@ -40,6 +40,12 @@ describe("InstructionService", () => {
       "code-review",
       "debugging"
     ]);
+    expect(preview.prompts.map((prompt) => prompt.id)).toEqual([
+      "copilot-architect-plan",
+      "copilot-architect-implement",
+      "copilot-architect-review",
+      "copilot-architect-debug"
+    ]);
   });
 
   it("generates instructions and skills with backups and preserved user content", async () => {
@@ -59,10 +65,14 @@ describe("InstructionService", () => {
     expect(result.backupPath).toBeDefined();
     expect(result.preservedUserContent).toBe(true);
     expect(result.skills).toHaveLength(5);
+    expect(result.prompts).toHaveLength(4);
     expect(generated).toContain("## Preserved User Notes");
     expect(generated).toContain("Keep invoices boring.");
     await access(result.backupPath ?? "");
     await access(path.join(repoRoot, ".github/skills/validation/SKILL.md"));
+    await access(
+      path.join(repoRoot, ".github/prompts/copilot-architect-plan.prompt.md")
+    );
   });
 
   it("validates instructions and catches missing skills", async () => {

@@ -1,12 +1,16 @@
 import { access, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { RepoDiscoveryService } from "@copilot-architect/core";
+import { AdvancedAnalysisService, RepoDiscoveryService } from "@copilot-architect/core";
 import { IndexingService, type SearchResult } from "@copilot-architect/indexer";
 import {
   CURRENT_SCHEMA_VERSION,
+  type AdvancedAnalysis,
+  type AdvancedRiskScore,
   type DetectedCommand,
   type FeaturePlan,
+  type PlanQualityCheck,
+  type PlanQualityScore,
   type PlanStep,
   type RepoMap,
   type RiskItem,
@@ -74,13 +78,14 @@ export class FeaturePlanningService {
     }
 
     const startPath = path.resolve(options.startPath ?? process.cwd());
-    const repoMap = await ensureRepoMap(startPath);
+    const repoMap = await ensureRepoMap(startPath, options.strictRoot);
     const repoRoot = repoMap.workspaceRoot;
     const planningContext = await loadPlanningContext(repoRoot);
     const indexer = new IndexingService();
-    await indexer.index({ startPath: repoRoot });
+    await indexer.index({ startPath: repoRoot, strictRoot: options.strictRoot });
     const searchResponse = await indexer.findSimilarFeatures({
       startPath: repoRoot,
+      strictRoot: options.strictRoot,
       query: request,
       limit: options.searchLimit ?? 12
     });
@@ -90,12 +95,18 @@ export class FeaturePlanningService {
       throw new Error("Repo map does not contain any repositories");
     }
 
+    const advancedAnalysis = await new AdvancedAnalysisService().analyze({
+      startPath: repoRoot,
+      request,
+      repoMap
+    });
     const plan = buildPlan(
       request,
       repoMap,
       repo,
       searchResponse.results,
-      planningContext
+      planningContext,
+      advancedAnalysis
     );
     const markdown = renderFeaturePlanMarkdown(plan);
 
@@ -108,13 +119,17 @@ export class FeaturePlanningService {
   }
 }
 
-async function ensureRepoMap(startPath: string): Promise<UniversalRepoMap> {
+async function ensureRepoMap(
+  startPath: string,
+  strictRoot: boolean | undefined
+): Promise<UniversalRepoMap> {
   const repoMapPath = getArtifactFilePath(startPath, "repoMap");
 
   try {
     return await readJsonFile<UniversalRepoMap>(repoMapPath);
   } catch {
-    return (await new RepoDiscoveryService().analyze({ startPath })).repoMap;
+    return (await new RepoDiscoveryService().analyze({ startPath, strictRoot }))
+      .repoMap;
   }
 }
 
@@ -143,7 +158,8 @@ function buildPlan(
   repoMap: UniversalRepoMap,
   repo: RepoMap,
   searchResults: SearchResult[],
-  planningContext: PlanningContext
+  planningContext: PlanningContext,
+  advancedAnalysis: AdvancedAnalysis
 ): FeaturePlanArtifact {
   const id = timestampId();
   const title = titleFromRequest(request);
@@ -166,7 +182,7 @@ function buildPlan(
   const likelyNewFiles = inferLikelyNewFiles(repo, request, impactedModules);
   const assumptions = createAssumptions(repo, searchResults, planningContext);
   const openQuestions = createOpenQuestions(repo, request, planningContext);
-  const risks = createRisks(repo, searchResults);
+  const risks = createRisks(repo, searchResults, advancedAnalysis.riskScores);
   const testStrategy = createTestStrategy(repo, validationCommands);
   const requestInterpretation = `Implement "${request}" using the existing repository patterns, with changes scoped to the most relevant modules and with validation evidence before handoff.`;
   const affectedCommands = validationCommands.map((command) =>
@@ -213,6 +229,14 @@ function buildPlan(
     requiresHumanApproval: true
   };
 
+  const planQuality = createPlanQualityScore({
+    relevantFiles,
+    likelyFilesToModify,
+    validationCommands,
+    assumptions,
+    advancedAnalysis
+  });
+
   return {
     ...featurePlan,
     requestInterpretation,
@@ -234,7 +258,11 @@ function buildPlan(
     openQuestions,
     humanApprovalCheckpoint:
       "Stop here for human approval before generating or applying implementation handoff prompts.",
-    stackSpecificPlan
+    stackSpecificPlan,
+    advancedAnalysis,
+    riskScores: advancedAnalysis.riskScores,
+    planQuality,
+    readinessDiagnostics: advancedAnalysis.diagnostics
   };
 }
 
@@ -509,7 +537,11 @@ function createOpenQuestions(
   return questions;
 }
 
-function createRisks(repo: RepoMap, searchResults: SearchResult[]): RiskItem[] {
+function createRisks(
+  repo: RepoMap,
+  searchResults: SearchResult[],
+  riskScores: AdvancedRiskScore[]
+): RiskItem[] {
   const risks: RiskItem[] = [
     {
       severity: "medium",
@@ -541,7 +573,83 @@ function createRisks(repo: RepoMap, searchResults: SearchResult[]): RiskItem[] {
     });
   }
 
+  for (const riskScore of riskScores.filter((risk) => risk.level !== "low")) {
+    risks.push({
+      severity: riskScore.level,
+      title: `${riskScore.category} risk score: ${riskScore.level}`,
+      details: `${riskScore.score}/100. ${riskScore.reasons.join(" ")}`,
+      mitigation: riskScore.mitigation
+    });
+  }
+
   return risks;
+}
+
+function createPlanQualityScore(input: {
+  relevantFiles: PlanFileReference[];
+  likelyFilesToModify: string[];
+  validationCommands: ValidationCommand[];
+  assumptions: string[];
+  advancedAnalysis: AdvancedAnalysis;
+}): PlanQualityScore {
+  const checks: PlanQualityCheck[] = [
+    {
+      name: "context",
+      passed:
+        input.advancedAnalysis.architecturePatterns.length > 0 ||
+        input.relevantFiles.length > 0,
+      score:
+        input.advancedAnalysis.architecturePatterns.length > 0
+          ? 25
+          : input.relevantFiles.length > 0
+            ? 18
+            : 0,
+      details: `${input.advancedAnalysis.architecturePatterns.length} architecture pattern(s), ${input.relevantFiles.length} relevant file(s).`
+    },
+    {
+      name: "impacted-files",
+      passed: input.likelyFilesToModify.length > 0,
+      score: input.likelyFilesToModify.length > 0 ? 25 : 0,
+      details: `${input.likelyFilesToModify.length} likely file(s) to modify.`
+    },
+    {
+      name: "validation-commands",
+      passed: input.validationCommands.length > 0,
+      score: input.validationCommands.length > 0 ? 20 : 0,
+      details: `${input.validationCommands.length} validation command(s) found.`
+    },
+    {
+      name: "assumptions",
+      passed: input.assumptions.length <= 6,
+      score: input.assumptions.length <= 6 ? 15 : 6,
+      details: `${input.assumptions.length} assumption(s) recorded.`
+    },
+    {
+      name: "advanced-analysis",
+      passed:
+        input.advancedAnalysis.routes.length > 0 ||
+        input.advancedAnalysis.testRelationships.length > 0 ||
+        input.advancedAnalysis.dependencyManifests.length > 0,
+      score:
+        input.advancedAnalysis.routes.length > 0 ||
+        input.advancedAnalysis.testRelationships.length > 0 ||
+        input.advancedAnalysis.dependencyManifests.length > 0
+          ? 15
+          : 5,
+      details: `${input.advancedAnalysis.routes.length} route(s), ${input.advancedAnalysis.testRelationships.length} test relationship(s), ${input.advancedAnalysis.dependencyManifests.length} dependency manifest(s).`
+    }
+  ];
+  const score = checks.reduce((total, check) => total + check.score, 0);
+  const warnings = checks
+    .filter((check) => !check.passed)
+    .map((check) => `${check.name}: ${check.details}`);
+
+  return {
+    score,
+    level: score >= 80 ? "low" : score >= 55 ? "medium" : "high",
+    checks,
+    warnings
+  };
 }
 
 function createTestGaps(searchResults: SearchResult[], repo: RepoMap): string[] {

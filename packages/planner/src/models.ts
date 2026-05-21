@@ -1,6 +1,10 @@
 import type {
+  AdvancedAnalysis,
+  AdvancedRiskScore,
   DetectedCommand,
   FeaturePlan,
+  PlanQualityScore,
+  RepoReadinessDiagnostic,
   ValidationCommand
 } from "@copilot-architect/shared";
 import type { WorkspaceRepoDescriptor } from "@copilot-architect/core";
@@ -10,6 +14,7 @@ import type { SearchResult, WorkspaceSearchResult } from "@copilot-architect/ind
 export interface FeaturePlanningOptions {
   request: string;
   startPath?: string;
+  strictRoot?: boolean;
   searchLimit?: number;
 }
 
@@ -51,6 +56,10 @@ export interface FeaturePlanArtifact extends FeaturePlan {
   openQuestions: string[];
   humanApprovalCheckpoint: string;
   stackSpecificPlan: StackSpecificPlan;
+  advancedAnalysis: AdvancedAnalysis;
+  riskScores: AdvancedRiskScore[];
+  planQuality: PlanQualityScore;
+  readinessDiagnostics: RepoReadinessDiagnostic[];
   multiRepo?: WorkspacePlanSummary;
 }
 

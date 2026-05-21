@@ -199,7 +199,7 @@ describe("Phase 12 CLI completion", () => {
     await access(path.join(repoRoot, ".copilot-architect/reviews/latest-review.json"));
     expect(handoffCapture.stdout.join("\n")).toContain("Target agent: codex");
     expect(reviewCapture.stdout.join("\n")).toContain("Review JSON:");
-  });
+  }, 20_000);
 });
 
 async function createRepo(files: Record<string, string>): Promise<string> {

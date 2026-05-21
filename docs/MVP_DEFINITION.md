@@ -1,45 +1,112 @@
-# MVP Definition
+# MVP Definition And Lock
 
 ## Goal
 
-The MVP proves that a TypeScript/Node.js internal tool can analyze repositories, create repo intelligence artifacts, help plan features, generate agent handoffs, run safe validation, and produce review reports.
+The MVP proves that a TypeScript/Node.js internal tool can analyze a local repository or small multi-repo workspace, create repo intelligence artifacts, help plan features, generate approved handoff prompts, run safe validation, and produce review reports.
 
-## Required MVP Capabilities
+The MVP is local-first, CLI-first, MCP-first, and intended for internal team sharing through a normal npm workflow.
 
-- TypeScript CLI.
-- Local MCP server.
-- Repo analysis.
-- Language/framework/package-manager detection.
-- Adapter architecture.
-- Local index.
-- Search.
-- Feature planning.
-- Custom command config.
-- Validation runner.
-- Safety policy engine.
-- Audit logs.
-- Custom Copilot agents.
-- Copilot instructions generation.
-- Handoff prompt generation.
-- Review report generation.
-- Multi-repo workspace support.
-- Basic VS Code extension shell.
-- Optional local web UI.
-- Testing and validation reports.
+## Locked MVP Scope
 
-## MVP Boundaries
+The MVP includes exactly these required capabilities:
 
-The MVP is not a .NET product and does not include a Visual Studio VSIX. The core implementation is TypeScript/Node.js. Optional UI shells must not contain business logic.
+1. TypeScript CLI.
+2. Repo discovery.
+3. JS/TS adapter.
+4. React adapter.
+5. Angular adapter.
+6. Python adapter.
+7. Java adapter.
+8. Generic adapter.
+9. Local indexing.
+10. Search.
+11. Feature planning.
+12. Custom command config.
+13. Validation engine.
+14. Safety policy.
+15. MCP server.
+16. Custom Copilot agents.
+17. Copilot instructions.
+18. Handoff prompts.
+19. Review reports.
+20. Multi-repo workspace basics.
+21. Basic VS Code extension shell.
+22. Internal setup docs.
 
-## Success Criteria
+Copilot Chat support is delivered through the locked MVP surfaces above: custom agents, repository instructions, prompt files, and local MCP configuration. It does not add a separate cloud service or modify Copilot internals.
 
-- Developers can run the tool locally with npm.
-- The tool understands common stacks and falls back gracefully on unknown repos.
-- Plans are actionable and require human approval before implementation handoff.
-- Validation is safe by default.
-- Custom agents and instructions are generated from repo intelligence.
-- Review reports connect diffs, plans, tests, and risk.
+## MVP User Path
 
-## Deferrals
+The supported MVP path is:
 
-Enterprise governance, cloud storage, semantic vector search, commercial packaging, and Visual Studio-specific wrappers are future optional features.
+```bash
+npm install
+npm run build
+npm test
+npm run cli -- init
+npm run cli -- analyze
+npm run cli -- index
+npm run cli -- search "invoice"
+npm run cli -- plan "Add invoice approval workflow"
+npm run cli -- agents install
+npm run cli -- instructions generate
+npm run cli -- handoff --plan latest --approve
+npm run cli -- validate
+npm run cli -- review
+npm run cli -- mcp config
+npm run cli -- mcp
+```
+
+The sample-matrix test covers the main flow from analysis through review. The Copilot Chat integration tests cover agent, instruction, prompt, and MCP configuration artifacts.
+
+Phase 26 validation evidence and the MVP readiness decision are recorded in `docs/PHASE_26_VALIDATION_REPORT.md`.
+
+## MVP Non-Goals
+
+The MVP does not include:
+
+1. Full autonomous code editing inside this tool.
+2. Commercial distribution.
+3. Visual Studio VSIX.
+4. Cloud sync.
+5. Team dashboard.
+6. Heavy vector database.
+7. Perfect support for every framework.
+8. PR automation.
+
+The MVP is not a .NET product, does not include a Visual Studio VSIX, and does not assume target repositories are C#/.NET.
+
+## Lock Rules
+
+Until the MVP is stable:
+
+- Do not add new major product scope beyond the locked MVP scope.
+- Do not introduce a cloud backend, marketplace packaging, Visual Studio VSIX, .NET engine, or heavy vector database.
+- Do not move business logic into UI shells.
+- Do not claim perfect framework support.
+- Do not claim autonomous implementation approval or completion.
+- Do not bypass safety policy, human approval gates, or validation evidence.
+
+Optional wrappers may exist only as thin shells over CLI, MCP, or package services. They are not allowed to become the primary implementation surface for MVP behavior.
+
+## Acceptance Gates
+
+The MVP is considered locked when all of these pass:
+
+- `npm run format`
+- `npm run lint`
+- `npm run build`
+- `npm test`
+- `npm run cli -- doctor`
+- `npm run cli -- version`
+
+The test suite must continue to prove:
+
+- Adapter and repo discovery coverage for supported stacks.
+- The local index and search path.
+- Feature planning and approval-gated handoff generation.
+- Safety policy and validation command blocking.
+- Review report generation from plan, diff, and validation evidence.
+- Multi-repo workspace basics.
+- Custom agent, instruction, prompt, and MCP configuration artifacts.
+- The end-to-end MVP flow in `tests/sample-matrix.test.ts`.

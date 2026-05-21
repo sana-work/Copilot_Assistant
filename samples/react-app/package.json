@@ -1,0 +1,20 @@
+{
+  "name": "sample-react-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node -e \"console.log('react build ok')\"",
+    "test": "node -e \"console.log('react tests ok')\"",
+    "lint": "node -e \"console.log('react lint ok')\""
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.22.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "vitest": "^2.1.9"
+  }
+}

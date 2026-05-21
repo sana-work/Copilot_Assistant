@@ -1,0 +1,9 @@
+{
+  "projects": {
+    "sample-angular-app": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src"
+    }
+  }
+}

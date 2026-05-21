@@ -48,7 +48,7 @@ export class ValidationService {
 
   async validate(options: ValidationServiceOptions = {}): Promise<ValidationRunResult> {
     const startPath = path.resolve(options.startPath ?? process.cwd());
-    const repoMap = await ensureRepoMap(startPath);
+    const repoMap = await ensureRepoMap(startPath, options.strictRoot);
     const repo = repoMap.repos[0];
 
     if (!repo) {
@@ -153,13 +153,17 @@ export class ValidationService {
   }
 }
 
-async function ensureRepoMap(startPath: string): Promise<UniversalRepoMap> {
+async function ensureRepoMap(
+  startPath: string,
+  strictRoot: boolean | undefined
+): Promise<UniversalRepoMap> {
   const repoMapPath = getArtifactFilePath(startPath, "repoMap");
 
   try {
     return await readJsonFile<UniversalRepoMap>(repoMapPath);
   } catch {
-    return (await new RepoDiscoveryService().analyze({ startPath })).repoMap;
+    return (await new RepoDiscoveryService().analyze({ startPath, strictRoot }))
+      .repoMap;
   }
 }
 

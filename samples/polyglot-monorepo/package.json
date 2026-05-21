@@ -1,0 +1,13 @@
+{
+  "name": "sample-polyglot-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "node -e \"console.log('polyglot build ok')\"",
+    "test": "node -e \"console.log('polyglot tests ok')\""
+  }
+}

@@ -16,7 +16,7 @@ Phase 13 installs these files under `.github/agents/` by default:
 - `SecurityReviewer.agent.md`
 - `PerformanceReviewer.agent.md`
 
-Each agent includes YAML frontmatter, name, description, model, tools, instructions, handoff guidance, safety rules, and references to `.copilot-architect/` artifacts.
+Each agent includes YAML frontmatter, name, description, model, tools, Copilot Chat handoffs, instructions, handoff guidance, safety rules, and references to `.copilot-architect/` artifacts.
 
 ## Commands
 
@@ -27,7 +27,8 @@ npm run cli -- agents install --dry-run
 npm run cli -- agents install --force
 npm run cli -- agents update
 npm run cli -- agents validate
-npm run cli -- agents doctor
+npm run cli -- agents doctor --path /path/to/repo
+npm run cli -- mcp config --path /path/to/repo
 ```
 
 Use `--output <dir>` to install to another directory. Use `--output json` or `--json` for structured output.
@@ -39,6 +40,7 @@ Existing files are skipped by default. `--force` and `agents update` overwrite g
 - `@FeatureArchitect` analyzes the repo, finds similar patterns, and produces implementation plans. It must not edit code.
 - `@FeatureImplementer` implements only an approved plan and handoff, keeps changes minimal, updates tests, and runs validation.
 - `@CodeReviewer` reviews the implementation against the approved plan, validation evidence, and safety expectations.
+- `@Debugger` analyzes failed validation reports and proposes minimal safe fixes.
 
 ## Handoff Flow
 
@@ -50,6 +52,25 @@ Existing files are skipped by default. `--force` and `agents update` overwrite g
 6. Use `@FeatureImplementer` or another coding agent to implement from the generated handoff artifact.
 7. Run validation, then generate review evidence with `npm run cli -- review --plan latest --validation latest`.
 8. Use the generated `@CodeReviewer` prompt to inspect the diff against the approved plan and validation report.
+9. If validation failed, hand off from `@CodeReviewer` to `@Debugger` with the latest validation report.
+
+Agent files include these Copilot Chat handoffs:
+
+- `FeatureArchitect` to `FeatureImplementer`
+- `FeatureImplementer` to `CodeReviewer`
+- `CodeReviewer` to `Debugger` when validation failed
+
+## Copilot Chat MCP
+
+Copilot Architect writes `.vscode/mcp.json` for VS Code and GitHub Copilot Chat:
+
+```bash
+npm run cli -- mcp config --path /path/to/repo
+```
+
+The generated server is named `copilotArchitect` and runs the local stdio MCP server. Open VS Code Command Palette, run `MCP: List Servers`, start `copilotArchitect`, then use Copilot Chat in Agent mode.
+
+Copilot Architect does not modify Copilot internals; it provides supported repository files and a local MCP server configuration.
 
 ## Instructions Flow
 
@@ -70,6 +91,13 @@ Generated skills:
 - `.github/skills/validation/SKILL.md`
 - `.github/skills/code-review/SKILL.md`
 - `.github/skills/debugging/SKILL.md`
+
+Generated Copilot Chat prompts:
+
+- `.github/prompts/copilot-architect-plan.prompt.md`
+- `.github/prompts/copilot-architect-implement.prompt.md`
+- `.github/prompts/copilot-architect-review.prompt.md`
+- `.github/prompts/copilot-architect-debug.prompt.md`
 
 ## UI Boundary
 

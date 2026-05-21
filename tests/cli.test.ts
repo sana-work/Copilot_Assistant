@@ -5,6 +5,8 @@ import {
   getDoctorReport,
   getDoctorText,
   getHelpText,
+  getVersionReport,
+  getVersionText,
   runCli
 } from "../packages/cli/src/index.js";
 
@@ -39,8 +41,20 @@ describe("CLI", () => {
     expect(capture.stderr).toEqual([]);
     expect(capture.stdout.join("\n")).toContain("TypeScript/Node.js-first");
     expect(capture.stdout.join("\n")).toContain(
-      "Phase 15 implementation handoff is ready"
+      "Phase 23 packaging and internal team controls are ready"
     );
+  });
+
+  it("runs the version command", async () => {
+    const capture = createCapture();
+    const result = await runCli(["version", "--json"], capture.io);
+    const report = JSON.parse(capture.stdout.join("\n"));
+
+    expect(result.exitCode).toBe(0);
+    expect(capture.stderr).toEqual([]);
+    expect(report.name).toBe("copilot-architect");
+    expect(report.version).toBe("0.1.0");
+    expect(report.distribution).toBe("internal");
   });
 
   it("prints help for --help", async () => {
@@ -61,6 +75,13 @@ describe("CLI", () => {
 
   it("exports stable doctor text for command-line use", () => {
     expect(getDoctorText("v20.11.0")).toContain("Node.js: v20.11.0");
+    expect(getDoctorText("v20.11.0")).toContain("npm run package:local");
+  });
+
+  it("exports stable version text for command-line use", () => {
+    expect(getVersionText("v20.11.0")).toContain("Copilot Architect 0.1.0");
+    expect(getVersionText("v20.11.0")).toContain("Distribution: internal");
+    expect(getVersionReport("v20.11.0").packageManager).toBe("npm");
   });
 
   it("uses the shared diagnostic report model for doctor output", () => {

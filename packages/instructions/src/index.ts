@@ -7,6 +7,7 @@ import {
   type InstructionGenerationResult,
   type RepoMap,
   type UniversalRepoMap,
+  createTrustMetadata,
   getArtifactDirectoryPath,
   writeJsonFile
 } from "@copilot-architect/shared";
@@ -21,6 +22,7 @@ export interface InstructionPreviewResult {
   outputPath: string;
   markdown: string;
   skills: SkillPreviewResult[];
+  prompts: PromptPreviewResult[];
   repoMap: UniversalRepoMap;
 }
 
@@ -35,8 +37,20 @@ export interface SkillGenerationResult extends SkillPreviewResult {
   backupPath?: string;
 }
 
+export interface PromptPreviewResult {
+  id: string;
+  outputPath: string;
+  markdown: string;
+}
+
+export interface PromptGenerationResult extends PromptPreviewResult {
+  status: "generated" | "updated";
+  backupPath?: string;
+}
+
 export interface InstructionGenerationSummary extends InstructionGenerationResult {
   skills: SkillGenerationResult[];
+  prompts: PromptGenerationResult[];
   preservedUserContent: boolean;
 }
 
@@ -51,6 +65,7 @@ export interface InstructionValidationResult {
   ok: boolean;
   checkedPath: string;
   skillsPath: string;
+  promptsPath: string;
   files: InstructionValidationFileResult[];
   messages: string[];
 }
@@ -63,6 +78,16 @@ interface SkillDefinition {
   whenToUse: string[];
   workflow: string[];
   artifacts: string[];
+}
+
+interface PromptDefinition {
+  id: string;
+  fileName: string;
+  name: string;
+  description: string;
+  agent: string;
+  argumentHint: string;
+  body: string[];
 }
 
 const generatedStart = "<!-- copilot-architect:generated:start -->";
@@ -78,6 +103,7 @@ const requiredInstructionHeadings = [
   "## Lint And Format Commands",
   "## Coding Conventions",
   "## Safety Rules",
+  "## Trust Metadata",
   "## Planning Workflow",
   "## Approval Workflow",
   "## Validation Workflow",
@@ -191,6 +217,64 @@ const skillDefinitions: SkillDefinition[] = [
   }
 ];
 
+const promptDefinitions: PromptDefinition[] = [
+  {
+    id: "copilot-architect-plan",
+    fileName: "copilot-architect-plan.prompt.md",
+    name: "copilot-architect-plan",
+    description: "Plan a feature with Copilot Architect repo intelligence.",
+    agent: "FeatureArchitect",
+    argumentHint: "feature request",
+    body: [
+      "@FeatureArchitect Add ${input:feature:feature request} based on this repo.",
+      "Use Copilot Architect repo map, index, MCP tools, and latest generated plan.",
+      "Do not modify code yet. First create a detailed implementation plan.",
+      "Include impacted files, similar feature patterns, risks, tests, validation commands, and open questions."
+    ]
+  },
+  {
+    id: "copilot-architect-implement",
+    fileName: "copilot-architect-implement.prompt.md",
+    name: "copilot-architect-implement",
+    description: "Implement an approved Copilot Architect plan.",
+    agent: "FeatureImplementer",
+    argumentHint: "optional implementation notes",
+    body: [
+      "@FeatureImplementer Implement the approved plan from .copilot-architect/plans/latest-plan.md.",
+      "Use .copilot-architect/handoffs/latest-handoff.md when it exists.",
+      "Keep changes scoped to the approved plan, update or add focused tests, run validation commands, and summarize changed files.",
+      "Do not expand scope without human approval."
+    ]
+  },
+  {
+    id: "copilot-architect-review",
+    fileName: "copilot-architect-review.prompt.md",
+    name: "copilot-architect-review",
+    description: "Review implementation against plan and validation evidence.",
+    agent: "CodeReviewer",
+    argumentHint: "optional review focus",
+    body: [
+      "@CodeReviewer Review the git diff against the approved plan and latest validation report.",
+      "Prioritize bugs, missing tests, behavioral regressions, validation failures, security risks, and unexpected scope.",
+      "Use .copilot-architect/reviews/latest-review.md when available and produce actionable findings."
+    ]
+  },
+  {
+    id: "copilot-architect-debug",
+    fileName: "copilot-architect-debug.prompt.md",
+    name: "copilot-architect-debug",
+    description: "Debug failed validation evidence from Copilot Architect.",
+    agent: "Debugger",
+    argumentHint: "failing command or symptom",
+    body: [
+      "@Debugger Validation failed.",
+      "Use .copilot-architect/runs/latest-validation.json and related logs to classify the failure.",
+      "Propose the smallest safe fix, identify files to inspect, and name the validation command to rerun.",
+      "Do not mask failures by deleting tests or loosening validation without approval."
+    ]
+  }
+];
+
 export class InstructionService {
   async preview(
     options: InstructionServiceOptions = {}
@@ -211,6 +295,11 @@ export class InstructionService {
         outputPath: resolveSkillPath(repoRoot, definition),
         markdown: renderSkill(definition, repoMap)
       })),
+      prompts: promptDefinitions.map((definition) => ({
+        id: definition.id,
+        outputPath: resolvePromptPath(repoRoot, definition),
+        markdown: renderPrompt(definition, repoMap)
+      })),
       repoMap
     };
   }
@@ -225,6 +314,7 @@ export class InstructionService {
     );
     const backupPath = await backupIfExists(preview.outputPath);
     const skills: SkillGenerationResult[] = [];
+    const prompts: PromptGenerationResult[] = [];
 
     await mkdir(path.dirname(preview.outputPath), { recursive: true });
     await writeFile(preview.outputPath, preview.markdown, "utf8");
@@ -240,18 +330,35 @@ export class InstructionService {
       });
     }
 
+    for (const prompt of preview.prompts) {
+      const promptBackupPath = await backupIfExists(prompt.outputPath);
+      await mkdir(path.dirname(prompt.outputPath), { recursive: true });
+      await writeFile(prompt.outputPath, prompt.markdown, "utf8");
+      prompts.push({
+        ...prompt,
+        status: promptBackupPath ? "updated" : "generated",
+        backupPath: promptBackupPath
+      });
+    }
+
     const result: InstructionGenerationSummary = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
+      trust: createTrustMetadata({
+        artifactKind: "copilot-instructions",
+        source: preview.outputPath
+      }),
       target: "copilot-instructions",
       status: backupPath ? "updated" : "generated",
       outputPath: preview.outputPath,
       backupPath,
       skills,
+      prompts,
       preservedUserContent: preview.markdown.includes("## Preserved User Notes"),
       messages: [
         "Generated repo-aware Copilot instructions.",
         `Generated ${skills.length} skill file(s).`,
+        `Generated ${prompts.length} Copilot Chat prompt file(s).`,
         backupPath
           ? "Existing instructions were backed up before overwrite."
           : "No existing instructions needed backup."
@@ -269,11 +376,17 @@ export class InstructionService {
     const repoRoot = resolveStartPath(options.startPath);
     const checkedPath = resolveOutputPath(repoRoot, options.outputPath);
     const skillsPath = path.join(repoRoot, ".github", "skills");
+    const promptsPath = path.join(repoRoot, ".github", "prompts");
     const files = [
       await validateInstructionFile(checkedPath),
       ...(await Promise.all(
         skillDefinitions.map((definition) =>
           validateSkillFile(resolveSkillPath(repoRoot, definition))
+        )
+      )),
+      ...(await Promise.all(
+        promptDefinitions.map((definition) =>
+          validatePromptFile(resolvePromptPath(repoRoot, definition))
         )
       ))
     ];
@@ -282,9 +395,10 @@ export class InstructionService {
       ok: files.every((file) => file.ok),
       checkedPath,
       skillsPath,
+      promptsPath,
       files,
       messages: [
-        `Checked instructions file and ${skillDefinitions.length} skill file(s).`,
+        `Checked instructions file, ${skillDefinitions.length} skill file(s), and ${promptDefinitions.length} prompt file(s).`,
         `${files.filter((file) => file.ok).length} valid, ${files.filter((file) => !file.ok).length} invalid.`
       ]
     };
@@ -298,6 +412,10 @@ async function ensureRepoMap(startPath: string): Promise<UniversalRepoMap> {
 function renderInstructions(repoMap: UniversalRepoMap): string {
   const repo = repoMap.repos[0];
   const generatedAt = new Date().toISOString();
+  const trust = createTrustMetadata({
+    artifactKind: "copilot-instructions",
+    source: ".github/copilot-instructions.md"
+  });
 
   return [
     "# Copilot Instructions",
@@ -356,6 +474,15 @@ function renderInstructions(repoMap: UniversalRepoMap): string {
       "- Store Copilot Architect evidence under `.copilot-architect/`."
     ].join("\n"),
     "",
+    "## Trust Metadata",
+    "",
+    [
+      `- Generated by: ${trust.generatedBy}`,
+      `- Policy: ${trust.policyId}`,
+      `- Local only: ${trust.localOnly ? "yes" : "no"}`,
+      `- Telemetry enabled: ${trust.telemetryEnabled ? "yes" : "no"}`
+    ].join("\n"),
+    "",
     "## Planning Workflow",
     "",
     [
@@ -393,6 +520,11 @@ function renderInstructions(repoMap: UniversalRepoMap): string {
 }
 
 function renderSkill(definition: SkillDefinition, repoMap: UniversalRepoMap): string {
+  const trust = createTrustMetadata({
+    artifactKind: "copilot-skill",
+    source: `.github/skills/${definition.directoryName}/SKILL.md`
+  });
+
   return [
     `# ${definition.title}`,
     "",
@@ -422,7 +554,42 @@ function renderSkill(definition: SkillDefinition, repoMap: UniversalRepoMap): st
     "",
     "- Keep writes inside the workspace root.",
     "- Do not expose secrets.",
-    "- Respect `.copilot-architect/policy.json`."
+    "- Respect `.copilot-architect/policy.json`.",
+    "",
+    "## Trust Metadata",
+    "",
+    `- Generated by: ${trust.generatedBy}`,
+    `- Policy: ${trust.policyId}`,
+    `- Local only: ${trust.localOnly ? "yes" : "no"}`,
+    `- Telemetry enabled: ${trust.telemetryEnabled ? "yes" : "no"}`
+  ].join("\n");
+}
+
+function renderPrompt(definition: PromptDefinition, repoMap: UniversalRepoMap): string {
+  return [
+    "---",
+    `name: ${definition.name}`,
+    `description: ${JSON.stringify(definition.description)}`,
+    `agent: ${definition.agent}`,
+    `argument-hint: ${JSON.stringify(definition.argumentHint)}`,
+    "tools:",
+    "  - copilotArchitect/*",
+    "---",
+    "",
+    ...definition.body,
+    "",
+    "Use these local artifacts when available:",
+    "",
+    "- `.copilot-architect/repo-map.json`",
+    "- `.copilot-architect/index/`",
+    "- `.copilot-architect/plans/latest-plan.md`",
+    "- `.copilot-architect/handoffs/latest-handoff.md`",
+    "- `.copilot-architect/runs/latest-validation.json`",
+    "- `.copilot-architect/reviews/latest-review.md`",
+    "",
+    `Repo context: ${repoMap.summary.summary}`,
+    "",
+    "Copilot Architect provides local repo context and MCP tools; it does not modify Copilot internals."
   ].join("\n");
 }
 
@@ -492,7 +659,8 @@ async function validateInstructionFile(
   for (const required of [
     "Generated by Copilot Architect",
     "Source repo-map schema",
-    ".copilot-architect/"
+    ".copilot-architect/",
+    "Telemetry enabled: no"
   ]) {
     if (!text.includes(required)) {
       errors.push(`Missing required content: ${required}.`);
@@ -530,7 +698,8 @@ async function validateSkillFile(
     "## When To Use",
     "## Workflow",
     "## Artifacts",
-    "## Safety"
+    "## Safety",
+    "## Trust Metadata"
   ]) {
     if (!text.includes(heading)) {
       errors.push(`Missing required section ${heading}.`);
@@ -539,6 +708,47 @@ async function validateSkillFile(
 
   if (!text.includes(".copilot-architect/")) {
     errors.push("Missing references to .copilot-architect artifacts.");
+  }
+
+  return {
+    filePath,
+    ok: errors.length === 0,
+    errors,
+    warnings: []
+  };
+}
+
+async function validatePromptFile(
+  filePath: string
+): Promise<InstructionValidationFileResult> {
+  const text = await tryReadText(filePath);
+  const errors: string[] = [];
+
+  if (!text) {
+    return {
+      filePath,
+      ok: false,
+      errors: ["Prompt file is missing."],
+      warnings: []
+    };
+  }
+
+  for (const required of [
+    "name:",
+    "description:",
+    "agent:",
+    "tools:",
+    "copilotArchitect/*",
+    ".copilot-architect/",
+    "does not modify Copilot internals"
+  ]) {
+    if (!text.includes(required)) {
+      errors.push(`Missing required content: ${required}.`);
+    }
+  }
+
+  if (!path.basename(filePath).endsWith(".prompt.md")) {
+    errors.push("Prompt file should use the .prompt.md suffix.");
   }
 
   return {
@@ -582,6 +792,10 @@ function resolveOutputPath(repoRoot: string, outputPath?: string): string {
 
 function resolveSkillPath(repoRoot: string, definition: SkillDefinition): string {
   return path.join(repoRoot, ".github", "skills", definition.directoryName, "SKILL.md");
+}
+
+function resolvePromptPath(repoRoot: string, definition: PromptDefinition): string {
+  return path.join(repoRoot, ".github", "prompts", definition.fileName);
 }
 
 function resolveStartPath(startPath?: string): string {

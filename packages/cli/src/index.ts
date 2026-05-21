@@ -11,8 +11,10 @@ import {
   type AgentValidationResult
 } from "@copilot-architect/agents";
 import {
+  AdvancedAnalysisService,
   RepoDiscoveryService,
   WorkspaceService,
+  type RepoReadinessReport,
   type WorkspaceServiceResult
 } from "@copilot-architect/core";
 import {
@@ -37,13 +39,19 @@ import {
   type WorkspaceImpactResult,
   type WorkspacePlanningResult
 } from "@copilot-architect/planner";
-import { startMcpServer } from "@copilot-architect/mcp-server";
+import {
+  CopilotChatMcpConfigService,
+  startMcpServer,
+  type CopilotChatMcpConfigResult
+} from "@copilot-architect/mcp-server";
 import { ReviewService, type ReviewServiceResult } from "@copilot-architect/reviewer";
 import {
+  ArtifactCleanupService,
   AuditLogService,
   CommandConfigService,
   SafetyPolicyService,
   ValidationService,
+  type ArtifactCleanupResult,
   type AuditListResult,
   type CommandConfigCategory,
   type ParsedCommandConfig,
@@ -62,6 +70,7 @@ import {
 import {
   ARTIFACT_DIRECTORY,
   CLI_COMMANDS,
+  COPILOT_ARCHITECT_VERSION,
   CURRENT_SCHEMA_VERSION,
   type DiagnosticReport,
   type CliCommandName,
@@ -92,28 +101,36 @@ const commandDescriptions = {
   validate: "Run safe validation commands.",
   policy: "Inspect and validate the local safety policy.",
   audit: "List local audit log entries.",
+  cleanup: "Apply local artifact retention cleanup.",
   review: "Generate a review report from diff and validation evidence.",
   handoff: "Generate an implementation handoff prompt.",
   agents: "Manage custom Copilot agent templates and installs.",
   instructions: "Generate Copilot instructions and AGENTS.md suggestions.",
   workspace: "Inspect or manage multi-repo workspace context.",
-  mcp: "Start the local MCP server.",
+  mcp: "Start the local MCP server or write Copilot Chat MCP config.",
   serve: "Start the optional local web UI shell.",
+  diagnostics: "Report repo readiness and advanced local intelligence.",
   status: "Show local Copilot Architect status.",
-  doctor: "Run environment and project checks."
+  doctor: "Run environment and project checks.",
+  version: "Print the Copilot Architect version."
 } satisfies Record<CliCommandName, string>;
 
 const commandUsage = {
   init: "npm run cli -- init [--path <repo>] [--overwrite] [--json]",
-  analyze: "npm run cli -- analyze [path] [--json] [--output <file>]",
-  index: "npm run cli -- index [path] [--rebuild] [--json]",
-  search: 'npm run cli -- search "query" [--path <repo>] [--limit <n>] [--json]',
-  plan: 'npm run cli -- plan "feature request" [--path <repo>] [--json]',
+  analyze:
+    "npm run cli -- analyze [path] [--path <repo>|--root <repo>] [--json] [--output <file>]",
+  index:
+    "npm run cli -- index [path] [--path <repo>|--root <repo>] [--rebuild] [--json]",
+  search:
+    'npm run cli -- search "query" [--path <repo>|--root <repo>] [--limit <n>] [--json]',
+  plan: 'npm run cli -- plan "feature request" [--path <repo>|--root <repo>] [--json]',
   commands: "npm run cli -- commands <list|validate> [--path <repo>] [--json]",
   validate:
-    "npm run cli -- validate [--build|--test|--lint|--format|--validation] [--path <repo>] [--json]",
+    "npm run cli -- validate [--build|--test|--lint|--format|--validation] [--path <repo>|--root <repo>] [--json]",
   policy: "npm run cli -- policy <show|validate> [--path <repo>] [--json]",
   audit: "npm run cli -- audit list [--path <repo>] [--limit <n>] [--json]",
+  cleanup:
+    "npm run cli -- cleanup [--path <repo>] [--dry-run|--apply] [--max-age-days <n>] [--max-runs <n>] [--json]",
   review:
     "npm run cli -- review [--path <repo>] [--plan latest|<file>] [--validation latest|<file>] [--json]",
   handoff:
@@ -124,11 +141,13 @@ const commandUsage = {
     "npm run cli -- instructions <generate|preview|validate> [--path <repo>] [--output <file>] [--json]",
   workspace:
     "npm run cli -- workspace <init|show|list|add|remove|index|search|impact|plan|validate-plan> [args] [--json]",
-  mcp: "npm run cli -- mcp [--path <repo>]",
+  mcp: "npm run cli -- mcp [--path <repo>] | npm run cli -- mcp config [--path <repo>] [--force] [--json]",
   serve:
     "npm run cli -- serve [--path <repo>] [--host 127.0.0.1] [--port <n>] [--json]",
+  diagnostics: "npm run cli -- diagnostics [--path <repo>] [--json]",
   status: "npm run cli -- status [--path <repo>] [--json]",
-  doctor: "npm run cli -- doctor [--json]"
+  doctor: "npm run cli -- doctor [--json]",
+  version: "npm run cli -- version [--json]"
 } satisfies Record<CliCommandName, string>;
 
 export function getHelpText(): string {
@@ -153,8 +172,9 @@ export function getHelpText(): string {
     "  npm run cli -- validate --test",
     "  npm run cli -- mcp",
     "",
-    "Phase 19 note:",
-    "  Multi-repo workspaces support named repos, cross-repo search, plans, and validation."
+    "Internal sharing:",
+    "  npm run cli -- version",
+    "  npm run package:local"
   ].join("\n");
 }
 
@@ -170,7 +190,39 @@ export function getCommandHelpText(command: CliCommandName): string {
     "Common flags:",
     "  --json       Print structured JSON where supported.",
     "  --path PATH  Run against a specific repo or workspace path.",
+    "  --root PATH  Treat PATH as the repo root instead of climbing to a parent Git root where supported.",
     "  --help       Show command help."
+  ].join("\n");
+}
+
+export interface VersionReport {
+  name: string;
+  version: string;
+  schemaVersion: string;
+  runtime: string;
+  packageManager: "npm";
+  distribution: "internal";
+}
+
+export function getVersionReport(nodeVersion = process.version): VersionReport {
+  return {
+    name: "copilot-architect",
+    version: COPILOT_ARCHITECT_VERSION,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    runtime: nodeVersion,
+    packageManager: "npm",
+    distribution: "internal"
+  };
+}
+
+export function getVersionText(nodeVersion = process.version): string {
+  const report = getVersionReport(nodeVersion);
+
+  return [
+    `${PROJECT_NAME} ${report.version}`,
+    `Schema: ${report.schemaVersion}`,
+    `Runtime: ${report.runtime}`,
+    "Distribution: internal"
   ].join("\n");
 }
 
@@ -183,6 +235,7 @@ export function getDoctorText(nodeVersion = process.version): string {
   return [
     `${PROJECT_NAME} doctor`,
     "",
+    `Version: ${COPILOT_ARCHITECT_VERSION}`,
     `Schema: ${report.schemaVersion}`,
     `Node.js: ${report.environment.nodeVersion}`,
     "Runtime: TypeScript/Node.js-first",
@@ -199,9 +252,9 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    id: "phase-15-doctor",
+    id: "phase-23-doctor",
     status: "ok",
-    summary: "Phase 15 implementation handoff is ready",
+    summary: "Phase 23 packaging and internal team controls are ready",
     environment: {
       nodeVersion,
       packageManager: "npm",
@@ -209,9 +262,49 @@ export function getDoctorReport(nodeVersion = process.version): DiagnosticReport
     },
     checks: [
       {
+        name: "version-command",
+        status: "ok",
+        message: "Run `npm run cli -- version` to verify the installed CLI version."
+      },
+      {
+        name: "local-package",
+        status: "ok",
+        message:
+          "Run `npm run package:local` to build an internal tarball under dist/release/."
+      },
+      {
+        name: "installation-docs",
+        status: "ok",
+        message:
+          "Internal setup, npm link, tarball, troubleshooting, and upgrade guidance live under docs/."
+      },
+      {
         name: "runtime",
         status: "ok",
-        message: "TypeScript/Node.js-first"
+        message: "TypeScript/Node.js-first with Node.js 20.11 or newer recommended."
+      },
+      {
+        name: "setup",
+        status: "ok",
+        message:
+          "Run `scripts/setup.sh` or `scripts/setup.ps1` after clone to install, build, and test."
+      },
+      {
+        name: "policy",
+        status: "ok",
+        message:
+          "Run `npm run cli -- init` and `npm run cli -- policy validate`; command allow/block lists and approval gates live in .copilot-architect/policy.json."
+      },
+      {
+        name: "local-first",
+        status: "ok",
+        message: "Telemetry is disabled by default and runtime artifacts stay local."
+      },
+      {
+        name: "cleanup",
+        status: "ok",
+        message:
+          "Run `npm run cli -- cleanup --dry-run` to preview retention and `--apply` to delete eligible artifacts."
       },
       {
         name: "dotnet-engine",
@@ -252,6 +345,13 @@ export async function runCli(
     return { exitCode: 0 };
   }
 
+  if (rawCommand === "version") {
+    const options = parseJsonOnlyArgs(commandArgs, "version");
+    const report = getVersionReport();
+    stdout(options.json ? JSON.stringify(report, null, 2) : getVersionText());
+    return { exitCode: 0 };
+  }
+
   if (rawCommand === "doctor") {
     const options = parseJsonOnlyArgs(commandArgs, "doctor");
     const report = getDoctorReport();
@@ -262,6 +362,17 @@ export async function runCli(
   if (rawCommand === "mcp") {
     try {
       const options = parseMcpArgs(commandArgs);
+      if (options.subcommand === "config") {
+        const result = await new CopilotChatMcpConfigService().write({
+          startPath: options.startPath,
+          force: options.force
+        });
+        stdout(
+          options.json ? JSON.stringify(result, null, 2) : getMcpConfigText(result)
+        );
+        return { exitCode: 0 };
+      }
+
       await startMcpServer({ startPath: options.startPath });
       return { exitCode: 0 };
     } catch (error) {
@@ -364,12 +475,30 @@ export async function runCli(
     }
   }
 
+  if (rawCommand === "cleanup") {
+    try {
+      const options = parseCleanupArgs(commandArgs);
+      const result = await new ArtifactCleanupService().cleanup({
+        startPath: options.startPath,
+        dryRun: options.dryRun,
+        maxAgeDays: options.maxAgeDays,
+        maxRuns: options.maxRuns
+      });
+      stdout(options.json ? JSON.stringify(result, null, 2) : getCleanupText(result));
+      return { exitCode: result.errors.length === 0 ? 0 : 1 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
   if (rawCommand === "analyze") {
     try {
       const options = parseAnalyzeArgs(commandArgs);
       const result = await new RepoDiscoveryService().analyze({
         startPath: options.startPath,
-        outputPath: options.outputPath
+        outputPath: options.outputPath,
+        strictRoot: options.strictRoot
       });
 
       stdout(
@@ -430,6 +559,7 @@ export async function runCli(
       const options = parseValidateArgs(commandArgs);
       const result = await new ValidationService().validate({
         startPath: options.startPath,
+        strictRoot: options.strictRoot,
         categories: options.categories,
         timeoutMs: options.timeoutMs,
         onOutput: options.stream
@@ -547,12 +677,29 @@ export async function runCli(
     }
   }
 
+  if (rawCommand === "diagnostics") {
+    try {
+      const options = parseStatusArgs(commandArgs);
+      const result = await new AdvancedAnalysisService().diagnose({
+        startPath: options.startPath
+      });
+      stdout(
+        options.json ? JSON.stringify(result, null, 2) : getDiagnosticsText(result)
+      );
+      return { exitCode: result.status === "error" ? 1 : 0 };
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+  }
+
   stdout(getCommandHelpText(rawCommand));
   return { exitCode: 0 };
 }
 
 interface AnalyzeCliOptions {
   startPath?: string;
+  strictRoot?: boolean;
   outputPath?: string;
   json: boolean;
 }
@@ -564,7 +711,10 @@ interface InitCliOptions {
 }
 
 interface McpCliOptions {
+  subcommand: "start" | "config";
   startPath?: string;
+  force?: boolean;
+  json: boolean;
 }
 
 interface JsonOnlyCliOptions {
@@ -587,13 +737,19 @@ function parseJsonOnlyArgs(args: string[], command: string): JsonOnlyCliOptions 
 }
 
 function parseMcpArgs(args: string[]): McpCliOptions {
-  const options: McpCliOptions = {};
+  const [maybeSubcommand, ...rest] = args;
+  const isConfig = maybeSubcommand === "config";
+  const values = isConfig ? rest : args;
+  const options: McpCliOptions = {
+    subcommand: isConfig ? "config" : "start",
+    json: false
+  };
 
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+  for (let index = 0; index < values.length; index += 1) {
+    const arg = values[index];
 
     if (arg === "--path") {
-      const startPath = args[index + 1];
+      const startPath = values[index + 1];
 
       if (!startPath) {
         throw new Error("Missing value for --path");
@@ -601,6 +757,16 @@ function parseMcpArgs(args: string[]): McpCliOptions {
 
       options.startPath = startPath;
       index += 1;
+      continue;
+    }
+
+    if (arg === "--force") {
+      options.force = true;
+      continue;
+    }
+
+    if (arg === "--json") {
+      options.json = true;
       continue;
     }
 
@@ -789,6 +955,77 @@ function parseAuditArgs(args: string[]): AuditCliOptions {
   return options;
 }
 
+interface CleanupCliOptions {
+  startPath?: string;
+  dryRun?: boolean;
+  maxAgeDays?: number;
+  maxRuns?: number;
+  json: boolean;
+}
+
+function parseCleanupArgs(args: string[]): CleanupCliOptions {
+  const options: CleanupCliOptions = { json: false };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--dry-run") {
+      options.dryRun = true;
+      continue;
+    }
+
+    if (arg === "--apply") {
+      options.dryRun = false;
+      continue;
+    }
+
+    if (arg === "--max-age-days") {
+      const value = Number(args[index + 1]);
+
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error("Missing or invalid value for --max-age-days");
+      }
+
+      options.maxAgeDays = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--max-runs") {
+      const value = Number(args[index + 1]);
+
+      if (!Number.isInteger(value) || value < 1) {
+        throw new Error("Missing or invalid value for --max-runs");
+      }
+
+      options.maxRuns = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--path") {
+      const startPath = args[index + 1];
+
+      if (!startPath) {
+        throw new Error("Missing value for --path");
+      }
+
+      options.startPath = startPath;
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown cleanup argument: ${arg}`);
+  }
+
+  return options;
+}
+
 function parseAnalyzeArgs(args: string[]): AnalyzeCliOptions {
   const options: AnalyzeCliOptions = {
     json: false
@@ -814,14 +1051,15 @@ function parseAnalyzeArgs(args: string[]): AnalyzeCliOptions {
       continue;
     }
 
-    if (arg === "--path") {
+    if (arg === "--path" || arg === "--root") {
       const startPath = args[index + 1];
 
       if (!startPath) {
-        throw new Error("Missing value for --path");
+        throw new Error(`Missing value for ${arg}`);
       }
 
       options.startPath = startPath;
+      options.strictRoot = arg === "--root";
       index += 1;
       continue;
     }
@@ -925,6 +1163,20 @@ function getCommandsListText(config: ParsedCommandConfig): string {
   return lines.join("\n");
 }
 
+function getMcpConfigText(result: CopilotChatMcpConfigResult): string {
+  return [
+    `${PROJECT_NAME}: mcp config`,
+    "",
+    `Status: ${result.status}`,
+    `Server: ${result.serverName}`,
+    `Config: ${result.configPath}`,
+    `Backup: ${result.backupPath ?? "none"}`,
+    `Command: ${result.config.servers.copilotArchitect.command}`,
+    `Args: ${result.config.servers.copilotArchitect.args.join(" ")}`,
+    ...result.messages.map((message) => `- ${message}`)
+  ].join("\n");
+}
+
 function getPolicyValidateText(result: SafetyPolicyValidationResult): string {
   const lines = [
     `${PROJECT_NAME}: policy validate`,
@@ -961,8 +1213,44 @@ function getAuditListText(result: AuditListResult): string {
   return lines.join("\n");
 }
 
+function getCleanupText(result: ArtifactCleanupResult): string {
+  const lines = [
+    `${PROJECT_NAME}: cleanup`,
+    "",
+    `Artifact root: ${result.artifactRoot}`,
+    `Policy: ${result.policyPath}`,
+    `Mode: ${result.dryRun ? "dry-run" : "apply"}`,
+    `Retention: ${result.retentionEnabled ? "enabled" : "disabled"}`,
+    `Max age days: ${result.maxAgeDays}`,
+    `Max files per directory: ${result.maxRuns}`,
+    `Directories: ${result.directories.join(", ") || "none"}`,
+    `Scanned files: ${result.scannedFiles}`,
+    `Eligible artifacts: ${result.candidates.length}`,
+    `Deleted artifacts: ${result.deleted.length}`,
+    `Summary: ${result.summary}`
+  ];
+
+  if (result.candidates.length > 0) {
+    lines.push(
+      "",
+      "Candidates:",
+      ...result.candidates.slice(0, 20).map((candidate) => {
+        const relative = path.relative(result.artifactRoot, candidate.path);
+        return `- ${candidate.reason}: ${relative} (${candidate.ageDays} day(s))`;
+      })
+    );
+  }
+
+  if (result.errors.length > 0) {
+    lines.push("", "Errors:", ...result.errors.map((error) => `- ${error}`));
+  }
+
+  return lines.join("\n");
+}
+
 interface IndexCliOptions {
   startPath?: string;
+  strictRoot?: boolean;
   rebuild?: boolean;
   json: boolean;
 }
@@ -983,14 +1271,15 @@ function parseIndexArgs(args: string[]): IndexCliOptions {
       continue;
     }
 
-    if (arg === "--path") {
+    if (arg === "--path" || arg === "--root") {
       const startPath = args[index + 1];
 
       if (!startPath) {
-        throw new Error("Missing value for --path");
+        throw new Error(`Missing value for ${arg}`);
       }
 
       options.startPath = startPath;
+      options.strictRoot = arg === "--root";
       index += 1;
       continue;
     }
@@ -1008,6 +1297,7 @@ function parseIndexArgs(args: string[]): IndexCliOptions {
 
 interface SearchCliOptions {
   startPath?: string;
+  strictRoot?: boolean;
   query: string;
   json: boolean;
   limit?: number;
@@ -1040,14 +1330,15 @@ function parseSearchArgs(args: string[]): SearchCliOptions {
       continue;
     }
 
-    if (arg === "--path") {
+    if (arg === "--path" || arg === "--root") {
       const startPath = args[index + 1];
 
       if (!startPath) {
-        throw new Error("Missing value for --path");
+        throw new Error(`Missing value for ${arg}`);
       }
 
       options.startPath = startPath;
+      options.strictRoot = arg === "--root";
       index += 1;
       continue;
     }
@@ -1104,11 +1395,13 @@ function getSearchText(response: SearchResponse): string {
 interface PlanCliOptions {
   request: string;
   startPath?: string;
+  strictRoot?: boolean;
   json: boolean;
 }
 
 interface ValidateCliOptions {
   startPath?: string;
+  strictRoot?: boolean;
   categories?: CommandConfigCategory[];
   timeoutMs?: number;
   json: boolean;
@@ -1172,14 +1465,15 @@ function parseValidateArgs(args: string[]): ValidateCliOptions {
       continue;
     }
 
-    if (arg === "--path") {
+    if (arg === "--path" || arg === "--root") {
       const startPath = args[index + 1];
 
       if (!startPath) {
-        throw new Error("Missing value for --path");
+        throw new Error(`Missing value for ${arg}`);
       }
 
       options.startPath = startPath;
+      options.strictRoot = arg === "--root";
       index += 1;
       continue;
     }
@@ -1207,14 +1501,15 @@ function parsePlanArgs(args: string[]): PlanCliOptions {
       continue;
     }
 
-    if (arg === "--path") {
+    if (arg === "--path" || arg === "--root") {
       const startPath = args[index + 1];
 
       if (!startPath) {
-        throw new Error("Missing value for --path");
+        throw new Error(`Missing value for ${arg}`);
       }
 
       options.startPath = startPath;
+      options.strictRoot = arg === "--root";
       index += 1;
       continue;
     }
@@ -1243,6 +1538,8 @@ function getPlanSummaryText(result: FeaturePlanningResult): string {
     `Status: ${result.plan.status}`,
     `Relevant files: ${result.plan.relevantFiles.length}`,
     `Validation commands: ${result.plan.validationPlan.commands.length}`,
+    `Plan quality: ${result.plan.planQuality.score}/100 (${result.plan.planQuality.level} risk)`,
+    `Risk scores: ${result.plan.riskScores.length}`,
     `Requires approval: ${result.plan.requiresHumanApproval ? "yes" : "no"}`,
     `Plan JSON: ${result.jsonPath}`,
     `Plan Markdown: ${result.markdownPath}`,
@@ -1739,7 +2036,7 @@ async function runAgentsCommand(
     };
   }
 
-  const result = service.doctor();
+  const result = service.doctor({ startPath: options.startPath });
   return {
     exitCode: 0,
     payload: result,
@@ -2008,10 +2305,15 @@ function getInstructionGenerateText(result: InstructionGenerationSummary): strin
     `Output: ${result.outputPath ?? "not written"}`,
     `Backup: ${result.backupPath ?? "none"}`,
     `Skills: ${result.skills.length}`,
+    `Prompts: ${result.prompts.length}`,
     `Preserved user content: ${result.preservedUserContent ? "yes" : "no"}`,
     ...result.skills.map(
       (skill) =>
         `- ${skill.id}: ${skill.status} ${skill.outputPath}${skill.backupPath ? ` (backup: ${skill.backupPath})` : ""}`
+    ),
+    ...result.prompts.map(
+      (prompt) =>
+        `- ${prompt.id}: ${prompt.status} ${prompt.outputPath}${prompt.backupPath ? ` (backup: ${prompt.backupPath})` : ""}`
     ),
     ...result.messages.map((message) => `- ${message}`)
   ].join("\n");
@@ -2024,6 +2326,7 @@ function getInstructionValidateText(result: InstructionValidationResult): string
     `Status: ${result.ok ? "ok" : "error"}`,
     `Checked: ${result.checkedPath}`,
     `Skills: ${result.skillsPath}`,
+    `Prompts: ${result.promptsPath}`,
     ...result.messages.map((message) => `- ${message}`),
     ...result.files.flatMap((file) => [
       "",
@@ -2195,13 +2498,37 @@ async function validateWorkspacePlan(options: WorkspaceCliOptions): Promise<{
   }
 }
 
-async function getStatus(options: StatusCliOptions): Promise<{
+interface StatusControls {
+  policyPath: string;
+  policyPresent: boolean;
+  policyReadable: boolean;
+  policyError?: string;
+  telemetryEnabled: boolean;
+  localFirst: boolean;
+  requiredApprovalGates: string[];
+  retention: {
+    enabled: boolean;
+    maxAgeDays: number;
+    maxRuns: number;
+    dryRunDefault: boolean;
+    directories: string[];
+  };
+  adminAgentTemplatePaths: string[];
+}
+
+interface StatusResult {
   workspaceRoot: string;
   artifactRoot: string;
   artifacts: Array<{ name: string; path: string; exists: boolean }>;
-}> {
+  controls: StatusControls;
+}
+
+async function getStatus(options: StatusCliOptions): Promise<StatusResult> {
   const workspaceRoot = path.resolve(options.startPath ?? process.cwd());
   const artifactRoot = path.join(workspaceRoot, ARTIFACT_DIRECTORY);
+  const policyPath = getArtifactFilePath(workspaceRoot, "policy");
+  const policyPresent = await pathExists(policyPath);
+  const controls = await getStatusControls(workspaceRoot, policyPath, policyPresent);
   const artifacts = [
     { name: "repo-map", path: getArtifactFilePath(workspaceRoot, "repoMap") },
     { name: "workspace", path: getArtifactFilePath(workspaceRoot, "workspace") },
@@ -2237,6 +2564,7 @@ async function getStatus(options: StatusCliOptions): Promise<{
   return {
     workspaceRoot,
     artifactRoot,
+    controls,
     artifacts: await Promise.all(
       artifacts.map(async (artifact) => ({
         ...artifact,
@@ -2246,18 +2574,130 @@ async function getStatus(options: StatusCliOptions): Promise<{
   };
 }
 
-function getStatusText(result: Awaited<ReturnType<typeof getStatus>>): string {
+function getStatusText(result: StatusResult): string {
   return [
     `${PROJECT_NAME}: status`,
     "",
     `Workspace: ${result.workspaceRoot}`,
     `Artifact root: ${result.artifactRoot}`,
+    `Telemetry: ${result.controls.telemetryEnabled ? "enabled" : "disabled"}`,
+    `Local first: ${result.controls.localFirst ? "yes" : "no"}`,
+    `Policy: ${result.controls.policyPresent ? "present" : "using defaults"}`,
+    `Retention: ${
+      result.controls.retention.enabled ? "enabled" : "disabled"
+    } (${result.controls.retention.maxAgeDays} day(s), ${
+      result.controls.retention.maxRuns
+    } file(s) per directory)`,
+    `Approval gates: ${result.controls.requiredApprovalGates.join(", ") || "none"}`,
     "",
     "Artifacts:",
     ...result.artifacts.map(
       (artifact) => `- ${artifact.name}: ${artifact.exists ? "present" : "missing"}`
     )
   ].join("\n");
+}
+
+function getDiagnosticsText(result: RepoReadinessReport): string {
+  const analysis = result.advancedAnalysis;
+
+  return [
+    `${PROJECT_NAME}: diagnostics`,
+    "",
+    `Repo: ${result.repoRoot}`,
+    `Status: ${result.status}`,
+    `Readiness score: ${result.score}/100`,
+    `Advanced summary: ${analysis.summary}`,
+    "",
+    "Architecture patterns:",
+    ...listOrNone(
+      analysis.architecturePatterns.map(
+        (pattern) =>
+          `${pattern.name} (${pattern.confidence}) - ${pattern.evidence.join(", ")}`
+      )
+    ),
+    "",
+    "Routes/APIs:",
+    ...listOrNone(
+      analysis.routes
+        .slice(0, 20)
+        .map(
+          (route) =>
+            `${route.kind} ${route.method} ${route.routePath} - ${route.filePath}`
+        )
+    ),
+    "",
+    "Risk scores:",
+    ...listOrNone(
+      analysis.riskScores.map(
+        (risk) => `${risk.category}: ${risk.level} (${risk.score}/100)`
+      )
+    ),
+    "",
+    "Readiness diagnostics:",
+    ...listOrNone(
+      result.diagnostics.map(
+        (diagnostic) =>
+          `${diagnostic.severity}: ${diagnostic.code} - ${diagnostic.message}${
+            diagnostic.recommendation ? ` ${diagnostic.recommendation}` : ""
+          }`
+      )
+    )
+  ].join("\n");
+}
+
+function listOrNone(values: string[]): string[] {
+  return values.length > 0 ? values.map((value) => `- ${value}`) : ["- None detected."];
+}
+
+async function getStatusControls(
+  workspaceRoot: string,
+  policyPath: string,
+  policyPresent: boolean
+): Promise<StatusControls> {
+  try {
+    const policy = await new SafetyPolicyService().load(workspaceRoot);
+
+    return {
+      policyPath,
+      policyPresent,
+      policyReadable: true,
+      telemetryEnabled: policy.telemetryEnabled ?? false,
+      localFirst: policy.localFirst ?? true,
+      requiredApprovalGates: policy.requiredApprovalGates ?? [],
+      retention: {
+        enabled: policy.artifactRetention?.enabled ?? true,
+        maxAgeDays: policy.artifactRetention?.maxAgeDays ?? 30,
+        maxRuns: policy.artifactRetention?.maxRuns ?? 50,
+        dryRunDefault: policy.artifactRetention?.dryRunDefault ?? true,
+        directories: policy.artifactRetention?.directories ?? [
+          "plans",
+          "handoffs",
+          "runs",
+          "reviews",
+          "diagnostics"
+        ]
+      },
+      adminAgentTemplatePaths: policy.adminAgentTemplatePaths ?? []
+    };
+  } catch (error) {
+    return {
+      policyPath,
+      policyPresent,
+      policyReadable: false,
+      policyError: error instanceof Error ? error.message : String(error),
+      telemetryEnabled: false,
+      localFirst: true,
+      requiredApprovalGates: [],
+      retention: {
+        enabled: true,
+        maxAgeDays: 30,
+        maxRuns: 50,
+        dryRunDefault: true,
+        directories: ["plans", "handoffs", "runs", "reviews", "diagnostics"]
+      },
+      adminAgentTemplatePaths: []
+    };
+  }
 }
 
 function getServePayload(server: WebServerStartResult): Record<string, unknown> {

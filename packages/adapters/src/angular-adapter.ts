@@ -133,6 +133,10 @@ export class AngularAdapter
 
   detectBuildCommands(context: AdapterContext): BuildCommand[] {
     const packageCommands = packageScriptCommands(context);
+    if (packageCommands.build.length > 0) {
+      return packageCommands.build;
+    }
+
     return [
       {
         kind: "build",
@@ -148,6 +152,10 @@ export class AngularAdapter
 
   detectTestCommands(context: AdapterContext): TestCommand[] {
     const packageCommands = packageScriptCommands(context);
+    if (packageCommands.test.length > 0) {
+      return packageCommands.test;
+    }
+
     return [
       {
         kind: "test",
@@ -163,6 +171,10 @@ export class AngularAdapter
 
   detectLintCommands(context: AdapterContext): LintCommand[] {
     const packageCommands = packageScriptCommands(context);
+    if (packageCommands.lint.length > 0) {
+      return packageCommands.lint;
+    }
+
     return [
       {
         kind: "lint",

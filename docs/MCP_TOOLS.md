@@ -12,6 +12,14 @@ The MCP server is implemented in TypeScript with the MCP TypeScript SDK. Start i
 npm run cli -- mcp
 ```
 
+Generate a VS Code/GitHub Copilot Chat workspace configuration with:
+
+```bash
+npm run cli -- mcp config
+```
+
+This writes `.vscode/mcp.json` with a `copilotArchitect` stdio server. It does not modify Copilot internals.
+
 ## Phase 11 Tools
 
 - `repo_map`

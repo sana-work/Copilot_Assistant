@@ -1,11 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  CopilotChatMcpConfigService,
   createCopilotArchitectMcpServer,
   listCopilotArchitectMcpToolNames
 } from "../packages/mcp-server/src/index.js";
@@ -133,6 +134,42 @@ describe("Copilot Architect MCP server", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain("requires approved=true");
+  });
+
+  it("writes a Copilot Chat MCP configuration for VS Code", async () => {
+    const repoRoot = await createRepo({
+      "package.json": JSON.stringify({ name: "mcp-config" })
+    });
+
+    const result = await new CopilotChatMcpConfigService().write({
+      startPath: repoRoot
+    });
+    const configText = await readFile(result.configPath, "utf8");
+    const config = JSON.parse(configText);
+
+    expect(result.status).toBe("created");
+    expect(config.servers.copilotArchitect.type).toBe("stdio");
+    expect(config.servers.copilotArchitect.command).toBe("node");
+    expect(config.servers.copilotArchitect.args).toContain("mcp");
+    expect(config.servers.copilotArchitect.args).toContain("--path");
+    expect(config.servers.copilotArchitect.args).toContain("${workspaceFolder}");
+    await access(result.configPath);
+  });
+
+  it("reports installed agents and MCP readiness through agent_status", async () => {
+    const repoRoot = await createRepo({
+      "package.json": JSON.stringify({ name: "agent-status" })
+    });
+    await new CopilotChatMcpConfigService().write({ startPath: repoRoot });
+    const { client } = await createConnectedServer(repoRoot);
+
+    const status = await callJsonTool(client, "agent_status", { path: repoRoot });
+
+    expect(status.ok).toBe(true);
+    expect(status.data.summary).toContain("@FeatureArchitect");
+    expect(status.data.checks.map((check: { name: string }) => check.name)).toContain(
+      "mcp-config"
+    );
   });
 
   it("supports multi-repo workspace map, search, and cross-repo impact tools", async () => {
