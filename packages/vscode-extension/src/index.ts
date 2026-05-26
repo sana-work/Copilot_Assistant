@@ -309,10 +309,144 @@ export function activate(
       return undefined;
     }
 
+    outputChannel.show(true);
+
+    // Workspace-aware overrides: when workspace.json exists, route analyze and index
+    // to per-repo workspace commands instead of treating the root as a single project.
+    if (command.id === "copilotArchitect.analyzeRepo") {
+      const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
+      if (repoRoots.length > 0) {
+        outputChannel.appendLine(`[workspace mode] analyzing ${repoRoots.length} registered repo(s)…`);
+        let passed = 0;
+        for (const repoRoot of repoRoots) {
+          const repoArgs = ["analyze", "--path", repoRoot];
+          outputChannel.appendLine(`$ ${createCliCommandLine(repoArgs)}`);
+          const r = await runner.run({
+            args: repoArgs,
+            cwd: extensionRoot,
+            onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
+          });
+          if (r.exitCode === 0) passed++;
+        }
+        state.lastCommand = `analyze (workspace, ${repoRoots.length} repos)`;
+        state.lastExitCode = passed === repoRoots.length ? 0 : 1;
+        dashboard.refresh();
+        vscode.window.showInformationMessage(
+          `Analyze complete: ${passed}/${repoRoots.length} repos analyzed.`
+        );
+        return undefined;
+      }
+    }
+
+    if (command.id === "copilotArchitect.buildIndex") {
+      const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
+      if (repoRoots.length > 0) {
+        const wsArgs = ["workspace", "index", "--path", workspaceRoot];
+        outputChannel.appendLine(`[workspace mode] $ ${createCliCommandLine(wsArgs)}`);
+        const r = await runner.run({
+          args: wsArgs,
+          cwd: extensionRoot,
+          onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
+        });
+        state.lastCommand = createCliCommandLine(wsArgs);
+        state.lastExitCode = r.exitCode;
+        dashboard.refresh();
+        if (r.exitCode === 0) {
+          vscode.window.showInformationMessage(
+            `Index built across ${repoRoots.length} registered repos.`
+          );
+        } else {
+          vscode.window.showErrorMessage("Workspace index failed. See output.");
+        }
+        return r;
+      }
+    }
+
+    if (command.id === "copilotArchitect.generatePlan") {
+      const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
+      if (repoRoots.length > 0) {
+        // workspace plan produces a cross-repo plan; feature request is args[1]
+        const wsArgs = ["workspace", "plan", ...args.slice(1), "--path", workspaceRoot];
+        outputChannel.appendLine(`[workspace mode] $ ${createCliCommandLine(wsArgs)}`);
+        const r = await runner.run({
+          args: wsArgs,
+          cwd: extensionRoot,
+          onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
+        });
+        state.lastCommand = createCliCommandLine(wsArgs);
+        state.lastExitCode = r.exitCode;
+        dashboard.refresh();
+        if (r.exitCode === 0) {
+          vscode.window.showInformationMessage(
+            `Workspace plan generated across ${repoRoots.length} repos.`
+          );
+        } else {
+          vscode.window.showErrorMessage("Workspace plan failed. See output.");
+        }
+        return r;
+      }
+    }
+
+    if (command.id === "copilotArchitect.validate") {
+      const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
+      if (repoRoots.length > 0) {
+        outputChannel.appendLine(`[workspace mode] validating ${repoRoots.length} repo(s)…`);
+        let passed = 0;
+        for (const repoRoot of repoRoots) {
+          const repoArgs = ["validate", "--path", repoRoot];
+          outputChannel.appendLine(`$ ${createCliCommandLine(repoArgs)}`);
+          const r = await runner.run({
+            args: repoArgs,
+            cwd: extensionRoot,
+            onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
+          });
+          if (r.exitCode === 0) passed++;
+        }
+        state.lastCommand = `validate (workspace, ${repoRoots.length} repos)`;
+        state.lastExitCode = passed === repoRoots.length ? 0 : 1;
+        dashboard.refresh();
+        if (passed === repoRoots.length) {
+          vscode.window.showInformationMessage(
+            `Validation passed: all ${repoRoots.length} repos.`
+          );
+        } else {
+          vscode.window.showErrorMessage(
+            `Validation: ${passed}/${repoRoots.length} repos passed. See output for details.`
+          );
+        }
+        return undefined;
+      }
+    }
+
+    if (command.id === "copilotArchitect.review") {
+      const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
+      if (repoRoots.length > 0) {
+        outputChannel.appendLine(`[workspace mode] reviewing ${repoRoots.length} repo(s)…`);
+        let passed = 0;
+        for (const repoRoot of repoRoots) {
+          const repoArgs = ["review", "--plan", "latest", "--validation", "latest", "--path", repoRoot];
+          outputChannel.appendLine(`$ ${createCliCommandLine(repoArgs)}`);
+          const r = await runner.run({
+            args: repoArgs,
+            cwd: extensionRoot,
+            onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
+          });
+          if (r.exitCode === 0) passed++;
+        }
+        state.lastCommand = `review (workspace, ${repoRoots.length} repos)`;
+        state.lastExitCode = passed > 0 ? 0 : 1;
+        dashboard.refresh();
+        vscode.window.showInformationMessage(
+          `Review complete: ${passed}/${repoRoots.length} repos reviewed. See .copilot-architect/reviews/ in each repo.`
+        );
+        return undefined;
+      }
+    }
+
+    // Single-repo (default) path
     const argsWithPath = [...args, "--path", workspaceRoot];
     const commandLine = createCliCommandLine(argsWithPath);
     outputChannel.appendLine(`$ ${commandLine}`);
-    outputChannel.show(true);
 
     const result = await runner.run({
       args: argsWithPath,
@@ -488,10 +622,19 @@ export function activate(
 
       // args[0] is the actual CLI command regardless of whether the user used a slash command
       const cliCommand = args[0];
-      const argsWithPath = [...args, "--path", workspaceRoot];
+
+      // Workspace-aware arg resolution: workspace plan uses the workspace root and all repos
+      const chatRepoRoots = await getRegisteredRepoRoots(workspaceRoot);
+      let runArgs: string[];
+      if (chatRepoRoots.length > 0 && cliCommand === "plan") {
+        runArgs = ["workspace", "plan", ...args.slice(1), "--path", workspaceRoot];
+      } else {
+        runArgs = [...args, "--path", workspaceRoot];
+      }
+
       stream.progress?.(getChatProgressMessage(cliCommand));
 
-      const result = await runner.run({ args: argsWithPath, cwd: extensionRoot });
+      const result = await runner.run({ args: runArgs, cwd: extensionRoot });
 
       if (result.exitCode !== 0) {
         const errText = (result.stderr || result.stdout).trim();
@@ -926,6 +1069,23 @@ function getChatFollowUpHint(command: string): string | undefined {
       return "\n\n---\n**Next steps:** Run `/agents` to install custom Copilot agent templates that use these instructions.";
     default:
       return undefined;
+  }
+}
+
+// Returns the absolute paths of all repos registered in workspace.json.
+// Returns [] when no workspace.json exists (single-repo mode).
+async function getRegisteredRepoRoots(workspaceRoot: string): Promise<string[]> {
+  try {
+    const wsPath = path.join(workspaceRoot, ".copilot-architect", "workspace.json");
+    const ws = JSON.parse(await readFile(wsPath, "utf8")) as {
+      repos?: Array<{ path?: string }>;
+    };
+    const repos = ws.repos ?? [];
+    return repos
+      .filter((r) => r.path && r.path !== ".")
+      .map((r) => path.resolve(workspaceRoot, r.path as string));
+  } catch {
+    return [];
   }
 }
 
