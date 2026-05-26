@@ -360,6 +360,26 @@ export function activate(
         forceNewWindow: true
       });
     }),
+    vscode.commands.registerCommand("copilotArchitect.setupMcp", async () => {
+      outputChannel.appendLine("$ npm run cli -- mcp config --path " + workspaceRoot);
+      outputChannel.show(true);
+      const result = await runner.run({
+        args: ["mcp", "config", "--path", workspaceRoot],
+        cwd: extensionRoot,
+        onOutput: (_s, t) => outputChannel.appendLine(t)
+      });
+      if (result.exitCode === 0) {
+        const action = await (vscode.window.showInformationMessage as (msg: string, ...items: string[]) => Promise<string | undefined>)(
+          "MCP server configured. Reload the window to activate Copilot Architect tools.",
+          "Reload Window"
+        );
+        if (action === "Reload Window") {
+          await vscode.commands.executeCommand?.("workbench.action.reloadWindow");
+        }
+      } else {
+        vscode.window.showErrorMessage("MCP config failed. Check the Output channel for details.");
+      }
+    }),
     vscode.commands.registerCommand("copilotArchitect.workspaceScan", async () => {
       // Ask the user which folder contains the sub-repos (e.g. repos/, services/, etc.)
       const uris = await vscode.window.showOpenDialog?.({
@@ -736,7 +756,7 @@ export function createDashboardHtml(state: ExtensionState): string {
     "</head>",
     "<body>",
     "<h1>Copilot Architect</h1>",
-    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo in New Window</a> <a href="command:copilotArchitect.workspaceScan">Scan &amp; Register Sub-repos</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
+    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo in New Window</a> <a href="command:copilotArchitect.workspaceScan">Scan &amp; Register Sub-repos</a> <a href="command:copilotArchitect.setupMcp">Setup MCP Server</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
     '<div class="grid">',
     ...sections.map(
       (section) => `<section><h2>${section.title}</h2><p>${section.body}</p></section>`

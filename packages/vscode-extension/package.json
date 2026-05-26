@@ -29,7 +29,8 @@
     "onCommand:copilotArchitect.installAgents",
     "onCommand:copilotArchitect.generateInstructions",
     "onCommand:copilotArchitect.openRepoInNewWindow",
-    "onCommand:copilotArchitect.workspaceScan"
+    "onCommand:copilotArchitect.workspaceScan",
+    "onCommand:copilotArchitect.setupMcp"
   ],
   "contributes": {
     "commands": [
@@ -91,6 +92,11 @@
         "command": "copilotArchitect.workspaceScan",
         "title": "Copilot Architect: Scan and Register Sub-repos",
         "icon": "$(source-control)"
+      },
+      {
+        "command": "copilotArchitect.setupMcp",
+        "title": "Copilot Architect: Setup MCP Server",
+        "icon": "$(plug)"
       }
     ],
     "viewsContainers": {
