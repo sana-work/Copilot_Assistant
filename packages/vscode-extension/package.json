@@ -15,6 +15,8 @@
     "vscode": "^1.90.0"
   },
   "activationEvents": [
+    "onStartupFinished",
+    "onChatParticipant:copilot-architect.architect",
     "onView:copilotArchitect.dashboard",
     "onCommand:copilotArchitect.openDashboard",
     "onCommand:copilotArchitect.refreshDashboard",
@@ -25,7 +27,8 @@
     "onCommand:copilotArchitect.review",
     "onCommand:copilotArchitect.startMcp",
     "onCommand:copilotArchitect.installAgents",
-    "onCommand:copilotArchitect.generateInstructions"
+    "onCommand:copilotArchitect.generateInstructions",
+    "onCommand:copilotArchitect.openRepoInNewWindow"
   ],
   "contributes": {
     "commands": [
@@ -77,6 +80,11 @@
         "command": "copilotArchitect.generateInstructions",
         "title": "Copilot Architect: Generate Instructions",
         "icon": "$(book)"
+      },
+      {
+        "command": "copilotArchitect.openRepoInNewWindow",
+        "title": "Copilot Architect: Open Repo in New Window",
+        "icon": "$(folder-opened)"
       }
     ],
     "viewsContainers": {
@@ -105,7 +113,58 @@
           "group": "navigation"
         }
       ]
-    }
+    },
+    "chatParticipants": [
+      {
+        "id": "copilot-architect.architect",
+        "fullName": "Copilot Architect",
+        "name": "architect",
+        "description": "Analyze repos, generate plans, validate, and review with Copilot Architect",
+        "isSticky": false,
+        "commands": [
+          {
+            "name": "analyze",
+            "description": "Detect languages, frameworks, and entry points in the current repo"
+          },
+          {
+            "name": "index",
+            "description": "Build a searchable local file index"
+          },
+          {
+            "name": "plan",
+            "description": "Generate a feature implementation plan — follow with your feature description"
+          },
+          {
+            "name": "validate",
+            "description": "Run build, test, lint, and format commands"
+          },
+          {
+            "name": "review",
+            "description": "Generate a review report from the latest git diff"
+          },
+          {
+            "name": "search",
+            "description": "Search the repo index — follow with your search query"
+          },
+          {
+            "name": "diagnostics",
+            "description": "Report repo readiness and analysis signals"
+          },
+          {
+            "name": "agents",
+            "description": "Install custom Copilot agent templates into .github/agents/"
+          },
+          {
+            "name": "instructions",
+            "description": "Generate .github/copilot-instructions.md from repo analysis"
+          },
+          {
+            "name": "help",
+            "description": "Show all available Copilot Architect commands"
+          }
+        ]
+      }
+    ]
   },
   "exports": {
     ".": {

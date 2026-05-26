@@ -194,9 +194,13 @@ Review reports include changed files, expected files from the plan, unexpected f
 
 ## VS Code Extension Shell
 
-`packages/vscode-extension` owns Phase 17 as a thin VS Code wrapper. Its manifest contributes a Copilot Architect activity-bar container, a `Copilot Architect` webview, and command-palette commands for analyze, index, plan, validate, review, MCP startup, agent install, and instruction generation.
+`packages/vscode-extension` owns Phase 17 as a thin VS Code wrapper. Its manifest contributes a Copilot Architect activity-bar container, a `Copilot Architect` webview, command-palette commands, an **Open Repo in New Window** command, and a **GitHub Copilot Chat participant** (`@architect`) with slash commands for all major workflows.
 
 The extension does not implement repo analysis, planning, validation, review, agent, or instruction behavior. Commands delegate to `npm run cli -- ...` in the active workspace root, and MCP startup delegates to `npm run cli -- mcp` through a VS Code terminal or Node child process fallback. The webview renders high-level sections for repo summary, languages/frameworks, plans, validation runs, review reports, agent status, and MCP status.
+
+The `openRepoInNewWindow` command opens a folder picker and calls `vscode.openFolder` with `forceNewWindow: true`, allowing users to analyze any repository without leaving the current window. The chat participant (`copilot-architect.architect`) handles slash commands (`/analyze`, `/index`, `/plan`, `/validate`, `/review`, `/search`, `/diagnostics`, `/agents`, `/instructions`, `/help`) and plain-text prompts by running the corresponding CLI command and streaming output back into the chat panel.
+
+See [VSCODE_EXTENSION.md](VSCODE_EXTENSION.md) for full usage details.
 
 ## Local Web UI
 

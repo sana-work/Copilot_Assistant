@@ -6,6 +6,7 @@ export const VIEW_CONTAINER_ID = "copilotArchitect";
 export const DASHBOARD_VIEW_ID = "copilotArchitect.dashboard";
 export const DASHBOARD_PANEL_TYPE = "copilotArchitect.panel";
 export const OUTPUT_CHANNEL_NAME = "Copilot Architect";
+export const CHAT_PARTICIPANT_ID = "copilot-architect.architect";
 
 export interface CopilotArchitectCommand {
   id: string;
@@ -120,12 +121,30 @@ export interface TerminalLike extends DisposableLike {
   show(preserveFocus?: boolean): void;
 }
 
+export interface ChatRequestLike {
+  command?: string;
+  prompt: string;
+}
+
+export interface ChatResponseStreamLike {
+  markdown(value: string): void;
+  progress?(value: string): void;
+}
+
+export type ChatRequestHandlerLike = (
+  request: ChatRequestLike,
+  context: unknown,
+  stream: ChatResponseStreamLike,
+  token: unknown
+) => Promise<void> | void;
+
 export interface VscodeApiLike {
   commands: {
     registerCommand(
       command: string,
       callback: (...args: unknown[]) => unknown
     ): DisposableLike;
+    executeCommand?(command: string, ...args: unknown[]): Promise<unknown>;
   };
   window: {
     createOutputChannel(name: string): OutputChannelLike;
@@ -136,6 +155,12 @@ export interface VscodeApiLike {
       prompt?: string;
       placeHolder?: string;
     }): Promise<string | undefined>;
+    showOpenDialog?(options: {
+      canSelectFolders?: boolean;
+      canSelectFiles?: boolean;
+      openLabel?: string;
+      title?: string;
+    }): Promise<UriLike[] | undefined>;
     registerWebviewViewProvider?(
       viewId: string,
       provider: WebviewViewProviderLike
@@ -153,6 +178,9 @@ export interface VscodeApiLike {
   };
   ViewColumn?: {
     One: number;
+  };
+  chat?: {
+    createChatParticipant(id: string, handler: ChatRequestHandlerLike): DisposableLike;
   };
 }
 
@@ -290,8 +318,48 @@ export function activate(
     ),
     vscode.commands.registerCommand("copilotArchitect.refreshDashboard", () =>
       dashboard.refresh()
-    )
+    ),
+    vscode.commands.registerCommand("copilotArchitect.openRepoInNewWindow", async () => {
+      const uris = await vscode.window.showOpenDialog?.({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        openLabel: "Open Repo",
+        title: "Select a repository folder to open in a new window"
+      });
+      if (!uris || uris.length === 0) return;
+      await vscode.commands.executeCommand?.("vscode.openFolder", uris[0], {
+        forceNewWindow: true
+      });
+    })
   );
+
+  if (vscode.chat) {
+    const chatHandler: ChatRequestHandlerLike = async (request, _context, stream) => {
+      if (request.command === "help" || (!request.command && !request.prompt.trim())) {
+        stream.markdown(getChatHelpText());
+        return;
+      }
+
+      const args = resolveChatCommandArgs(request.command, request.prompt.trim());
+      if (!args) {
+        stream.markdown("Unknown command. Use `/help` to see available commands.");
+        return;
+      }
+
+      stream.progress?.(`Running: ${createCliCommandLine(args)}`);
+
+      const result = await runner.run({ args, cwd: workspaceRoot });
+
+      if (result.stdout.trim()) {
+        stream.markdown(`\`\`\`\n${trimForChat(result.stdout)}\n\`\`\``);
+      }
+      if (result.exitCode !== 0 && result.stderr.trim()) {
+        stream.markdown(`\n**Error:**\n\`\`\`\n${trimForChat(result.stderr)}\n\`\`\``);
+      }
+    };
+
+    context.subscriptions.push(vscode.chat.createChatParticipant(CHAT_PARTICIPANT_ID, chatHandler));
+  }
 
   dashboard.refresh();
 
@@ -504,7 +572,7 @@ export function createDashboardHtml(state: ExtensionState): string {
     "</head>",
     "<body>",
     "<h1>Copilot Architect</h1>",
-    `<div class="actions">${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
+    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo in New Window</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
     '<div class="grid">',
     ...sections.map(
       (section) => `<section><h2>${section.title}</h2><p>${section.body}</p></section>`
@@ -579,6 +647,64 @@ function quoteCliArg(value: string): string {
 
 function trimForDashboard(value: string): string {
   return value.trim().slice(-2000);
+}
+
+function trimForChat(value: string): string {
+  return value.trim().slice(-3000);
+}
+
+export function resolveChatCommandArgs(
+  command: string | undefined,
+  prompt: string
+): string[] | undefined {
+  switch (command) {
+    case "analyze":
+      return ["analyze"];
+    case "index":
+      return ["index"];
+    case "plan":
+      return prompt ? ["plan", prompt] : undefined;
+    case "validate":
+      return ["validate"];
+    case "review":
+      return ["review", "--plan", "latest", "--validation", "latest"];
+    case "search":
+      return prompt ? ["search", prompt] : undefined;
+    case "diagnostics":
+      return ["diagnostics"];
+    case "agents":
+      return ["agents", "install"];
+    case "instructions":
+      return ["instructions", "generate"];
+    default:
+      return prompt ? ["plan", prompt] : undefined;
+  }
+}
+
+export function getChatHelpText(): string {
+  return [
+    "## Copilot Architect",
+    "",
+    "Use `@architect` with a slash command in Copilot Chat:",
+    "",
+    "| Command | What it does |",
+    "|---|---|",
+    "| `/analyze` | Detect languages, frameworks, and entry points |",
+    "| `/index` | Build a searchable local file index |",
+    "| `/plan <feature>` | Generate a feature implementation plan |",
+    "| `/validate` | Run build, test, lint, and format commands |",
+    "| `/review` | Review the latest git diff against the approved plan |",
+    "| `/search <query>` | Search the repo index |",
+    "| `/diagnostics` | Report repo readiness and analysis signals |",
+    "| `/agents` | Install custom Copilot agent templates |",
+    "| `/instructions` | Generate `.github/copilot-instructions.md` |",
+    "",
+    "**Example:** `@architect /plan add user authentication`",
+    "",
+    "You can also skip the slash command — any plain prompt is treated as a plan request:",
+    "",
+    "`@architect add a payment webhook handler`"
+  ].join("\n");
 }
 
 function renderCommandLink(command: CopilotArchitectCommand): string {
