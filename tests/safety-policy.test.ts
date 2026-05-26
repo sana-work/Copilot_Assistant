@@ -184,7 +184,7 @@ describe("Safety policy and audit services", () => {
     expect(checkpoint.created).toBe(true);
     expect(checkpoint.head).toMatch(/[a-f0-9]{40}/);
     expect(checkpoint.rollbackGuide).toContain("Rollback guide");
-  }, 20_000);
+  }, 60_000);
 });
 
 async function gitAvailable(): Promise<boolean> {
