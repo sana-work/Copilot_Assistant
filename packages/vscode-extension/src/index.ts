@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 export const EXTENSION_ID = "copilotArchitect";
 export const VIEW_CONTAINER_ID = "copilotArchitect";
@@ -138,6 +140,23 @@ export type ChatRequestHandlerLike = (
   token: unknown
 ) => Promise<void> | void;
 
+export interface LanguageModelChatMessageLike {
+  role: number;
+  content: string | unknown[];
+}
+
+export interface LanguageModelResponseLike {
+  text: AsyncIterable<string>;
+}
+
+export interface LanguageModelLike {
+  sendRequest(
+    messages: LanguageModelChatMessageLike[],
+    options: Record<string, unknown>,
+    token: unknown
+  ): Promise<LanguageModelResponseLike>;
+}
+
 export interface VscodeApiLike {
   commands: {
     registerCommand(
@@ -181,6 +200,13 @@ export interface VscodeApiLike {
   };
   chat?: {
     createChatParticipant(id: string, handler: ChatRequestHandlerLike): DisposableLike;
+  };
+  lm?: {
+    selectChatModels(selector?: { vendor?: string; family?: string }): Promise<LanguageModelLike[]>;
+  };
+  LanguageModelChatMessage?: {
+    User(content: string): LanguageModelChatMessageLike;
+    Assistant(content: string): LanguageModelChatMessageLike;
   };
 }
 
@@ -233,6 +259,7 @@ export function activate(
   dependencies: ExtensionDependencies = {}
 ): ActivatedExtensionApi {
   const workspaceRoot = getWorkspaceRoot(vscode);
+  const extensionRoot = resolveExtensionRoot(context);
   const outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
   const state: ExtensionState = {
     workspaceRoot,
@@ -262,10 +289,11 @@ export function activate(
     if (command.startsMcp) {
       activeMcpProcess?.dispose();
       state.mcpStatus = "starting";
-      outputChannel.appendLine(`$ ${createCliCommandLine(command.cliArgs)}`);
+      const mcpArgs = [...command.cliArgs, "--path", workspaceRoot];
+      outputChannel.appendLine(`$ ${createCliCommandLine(mcpArgs)}`);
       activeMcpProcess = mcpStarter.start({
-        args: command.cliArgs,
-        cwd: workspaceRoot,
+        args: mcpArgs,
+        cwd: extensionRoot,
         onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
       });
       state.mcpStatus = "running";
@@ -281,13 +309,14 @@ export function activate(
       return undefined;
     }
 
-    const commandLine = createCliCommandLine(args);
+    const argsWithPath = [...args, "--path", workspaceRoot];
+    const commandLine = createCliCommandLine(argsWithPath);
     outputChannel.appendLine(`$ ${commandLine}`);
     outputChannel.show(true);
 
     const result = await runner.run({
-      args,
-      cwd: workspaceRoot,
+      args: argsWithPath,
+      cwd: extensionRoot,
       onOutput: (stream, text) => outputChannel.appendLine(`[${stream}] ${text}`)
     });
 
@@ -334,7 +363,7 @@ export function activate(
   );
 
   if (vscode.chat) {
-    const chatHandler: ChatRequestHandlerLike = async (request, _context, stream) => {
+    const chatHandler: ChatRequestHandlerLike = async (request, _context, stream, token) => {
       if (request.command === "help" || (!request.command && !request.prompt.trim())) {
         stream.markdown(getChatHelpText());
         return;
@@ -342,20 +371,64 @@ export function activate(
 
       const args = resolveChatCommandArgs(request.command, request.prompt.trim());
       if (!args) {
-        stream.markdown("Unknown command. Use `/help` to see available commands.");
+        stream.markdown(
+          `Unknown command \`/${request.command}\`. Use \`/help\` to see available commands.`
+        );
         return;
       }
 
-      stream.progress?.(`Running: ${createCliCommandLine(args)}`);
+      // args[0] is the actual CLI command regardless of whether the user used a slash command
+      const cliCommand = args[0];
+      const argsWithPath = [...args, "--path", workspaceRoot];
+      stream.progress?.(getChatProgressMessage(cliCommand));
 
-      const result = await runner.run({ args, cwd: workspaceRoot });
+      const result = await runner.run({ args: argsWithPath, cwd: extensionRoot });
 
-      if (result.stdout.trim()) {
-        stream.markdown(`\`\`\`\n${trimForChat(result.stdout)}\n\`\`\``);
+      if (result.exitCode !== 0) {
+        const errText = (result.stderr || result.stdout).trim();
+        stream.markdown(
+          `**Command failed** (exit ${result.exitCode})\n\n\`\`\`\n${errText.slice(0, 2000)}\n\`\`\``
+        );
+        return;
       }
-      if (result.exitCode !== 0 && result.stderr.trim()) {
-        stream.markdown(`\n**Error:**\n\`\`\`\n${trimForChat(result.stderr)}\n\`\`\``);
+
+      // Prefer the written markdown artifact over raw stdout
+      let content = result.stdout;
+      const artifactPath = getChatArtifactPath(cliCommand, workspaceRoot);
+      if (artifactPath) {
+        try {
+          content = await readFile(artifactPath, "utf8");
+        } catch { /* no artifact yet — use stdout */ }
       }
+
+      // Try LM for every command
+      if (vscode.lm) {
+        stream.progress?.("Getting AI-powered insights…");
+        const repoCtx = cliCommand === "plan" ? await buildRepoContext(workspaceRoot) : "";
+        const lmPrompt = buildCommandLmPrompt(cliCommand, request.prompt.trim(), content, repoCtx);
+        if (lmPrompt) {
+          const streamed = await streamLmResponse(vscode, lmPrompt, stream, token);
+          if (streamed) {
+            const hint = getChatFollowUpHint(cliCommand);
+            if (hint) stream.markdown(hint);
+            return;
+          }
+        }
+      } else if (cliCommand === "plan") {
+        stream.markdown(
+          "> ℹ️ **GitHub Copilot language model not available.** Install GitHub Copilot Chat and sign in for AI-powered answers. Showing static analysis:\n\n"
+        );
+      }
+
+      // Fallback: show clean formatted output
+      if (artifactPath) {
+        const fallback = cliCommand === "plan" ? extractPlanSummary(content) : content.slice(0, 10000);
+        stream.markdown(fallback);
+      } else {
+        stream.markdown(formatCliOutputAsMarkdown(content));
+      }
+      const hint = getChatFollowUpHint(cliCommand);
+      if (hint) stream.markdown(hint);
     };
 
     context.subscriptions.push(vscode.chat.createChatParticipant(CHAT_PARTICIPANT_ID, chatHandler));
@@ -621,6 +694,16 @@ function getWorkspaceRoot(vscode: VscodeApiLike): string {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 }
 
+function resolveExtensionRoot(context: ExtensionContextLike): string {
+  // extensionPath = .../Copilot_Assistant/packages/vscode-extension
+  // monorepo root = .../Copilot_Assistant (two levels up)
+  const extensionPath = context.extensionPath ?? context.extensionUri?.fsPath;
+  if (extensionPath) {
+    return path.resolve(extensionPath, "..", "..");
+  }
+  return process.cwd();
+}
+
 function getNpmExecutable(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
@@ -649,9 +732,6 @@ function trimForDashboard(value: string): string {
   return value.trim().slice(-2000);
 }
 
-function trimForChat(value: string): string {
-  return value.trim().slice(-3000);
-}
 
 export function resolveChatCommandArgs(
   command: string | undefined,
@@ -679,6 +759,382 @@ export function resolveChatCommandArgs(
     default:
       return prompt ? ["plan", prompt] : undefined;
   }
+}
+
+function getChatProgressMessage(command: string): string {
+  const messages: Record<string, string> = {
+    analyze: "Analyzing repository…",
+    index: "Building file index…",
+    plan: "Generating feature plan…",
+    validate: "Running validation commands…",
+    review: "Generating code review…",
+    search: "Searching repository…",
+    diagnostics: "Running diagnostics…",
+    agents: "Installing agent templates…",
+    instructions: "Generating Copilot instructions…"
+  };
+  return messages[command] ?? "Running Copilot Architect…";
+}
+
+function getChatArtifactPath(command: string, workspaceRoot: string): string | undefined {
+  const base = path.join(workspaceRoot, ".copilot-architect");
+  switch (command) {
+    case "plan":
+      return path.join(base, "plans", "latest-plan.md");
+    case "validate":
+      return path.join(base, "runs", "latest-validation.md");
+    case "review":
+      return path.join(base, "reviews", "latest-review.md");
+    default:
+      return undefined;
+  }
+}
+
+function getChatFollowUpHint(command: string): string | undefined {
+  switch (command) {
+    case "analyze":
+      return "\n\n---\n**Next steps:** Run `/index` to build a searchable file index, then `/plan <feature>` to generate an implementation plan.";
+    case "index":
+      return "\n\n---\n**Next steps:** Use `/search <query>` to find relevant files, or `/plan <feature>` to generate a plan.";
+    case "plan":
+      return "\n\n---\n**Next steps:** Run `/validate` to check build and tests, then ask `@FeatureImplementer` to implement the plan.";
+    case "validate":
+      return "\n\n---\n**Next steps:** Run `/review` to generate a review report, or ask `@Debugger` to diagnose any failures.";
+    case "review":
+      return "\n\n---\n**Next steps:** Share the review with `@CodeReviewer` for deeper analysis, or address the findings and re-run `/validate`.";
+    case "instructions":
+      return "\n\n---\n**Next steps:** Run `/agents` to install custom Copilot agent templates that use these instructions.";
+    default:
+      return undefined;
+  }
+}
+
+async function buildRepoContext(workspaceRoot: string): Promise<string> {
+  const lines: string[] = [];
+
+  try {
+    const mapPath = path.join(workspaceRoot, ".copilot-architect", "repo-map.json");
+    const map = JSON.parse(await readFile(mapPath, "utf8"));
+    const repo = map.repos?.[0];
+    if (repo) {
+      const langs = (repo.languages as Array<{ name: string }>)?.map((l) => l.name).join(", ");
+      const fws = (repo.frameworks as Array<{ name: string }>)?.map((f) => f.name).join(", ");
+      const testCmd = (repo.commands?.test as Array<{ command: string }>)?.[0]?.command;
+      const entry = (repo.entryPoints as Array<{ filePath: string }>)?.[0]?.filePath;
+      if (langs) lines.push(`Languages: ${langs}`);
+      if (fws) lines.push(`Frameworks: ${fws}`);
+      if (entry) lines.push(`Entry point: ${entry}`);
+      if (testCmd) lines.push(`Test command: ${testCmd}`);
+    }
+  } catch { /* no repo-map yet */ }
+
+  try {
+    const indexPath = path.join(workspaceRoot, ".copilot-architect", "index", "index.json");
+    const idx = JSON.parse(await readFile(indexPath, "utf8"));
+    const docs = (idx.documents as Array<{
+      relativePath: string;
+      symbols: Array<{ name: string; kind: string }>;
+      extension: string;
+      fileSizeBytes: number;
+      isConfigFile: boolean;
+      isDocFile: boolean;
+    }>) ?? [];
+
+    const SOURCE_EXTS = new Set([".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go", ".rb", ".cs"]);
+    const sourceDocs = docs
+      .filter(
+        (d) =>
+          !d.isConfigFile &&
+          !d.isDocFile &&
+          d.fileSizeBytes > 0 &&
+          SOURCE_EXTS.has(d.extension)
+      )
+      .slice(0, 25);
+
+    if (sourceDocs.length) {
+      lines.push("\nSource files:");
+      for (const doc of sourceDocs) {
+        const syms = doc.symbols
+          ?.slice(0, 5)
+          .map((s) => s.name)
+          .join(", ");
+        lines.push(`- ${doc.relativePath}${syms ? ` [${syms}]` : ""}`);
+      }
+    }
+  } catch { /* no index yet */ }
+
+  return lines.join("\n");
+}
+
+function buildCommandLmPrompt(
+  command: string,
+  userRequest: string,
+  content: string,
+  repoContext: string
+): string | undefined {
+  const body = content.trim().slice(0, 8000);
+  const repoSection = repoContext ? `\nRepository context:\n${repoContext}\n` : "";
+
+  switch (command) {
+    case "plan": {
+      const summary = extractPlanSummary(content);
+      return [
+        "You are Copilot Architect, a coding assistant with access to the developer's repository analysis.",
+        "Answer specifically about THIS codebase using the actual file names, function names, and patterns provided.",
+        "Be concise and practical. Show a short code snippet when it helps. No generic advice.",
+        repoSection,
+        `Static analysis:\n${summary}`,
+        "",
+        `Developer's request: "${userRequest}"`,
+        "",
+        "Provide a specific implementation guide:",
+        "1. Which exact file(s) to modify and what to change",
+        "2. New dependencies to install (if any)",
+        "3. A short code snippet showing the key change",
+        "4. One command to verify it works"
+      ].join("\n");
+    }
+
+    case "analyze":
+      return [
+        "You are Copilot Architect. The developer just ran repo analysis.",
+        "Summarize concisely: main language/framework, key entry points, and 2-3 actionable observations.",
+        "Under 200 words. Use the actual names found in the output.",
+        "",
+        `Analysis output:\n${body}`
+      ].join("\n");
+
+    case "index":
+      return [
+        "You are Copilot Architect. The developer just built a searchable file index for their repo.",
+        "Confirm what was indexed. Suggest 3 useful `/search` queries they could run next.",
+        "Keep it short and practical.",
+        "",
+        `Index output:\n${body}`
+      ].join("\n");
+
+    case "validate":
+      return [
+        "You are Copilot Architect. The developer just ran validation (build, tests, lint).",
+        "If everything passed: confirm briefly and note any warnings.",
+        "If something failed: identify the failure and give specific fix steps with the relevant error lines.",
+        "Be direct — no fluff.",
+        "",
+        `Validation results:\n${body}`
+      ].join("\n");
+
+    case "review":
+      return [
+        "You are Copilot Architect. The developer just ran a code review on their latest git diff.",
+        "Summarize the most important findings: bugs, security issues, missing tests, code quality.",
+        "Give 3-5 specific, actionable recommendations referencing actual file names and lines where available.",
+        "",
+        `Review report:\n${body}`
+      ].join("\n");
+
+    case "search":
+      return [
+        "You are Copilot Architect. The developer searched their repo index.",
+        "Explain what was found and how it relates to their query. Group related results. Use bullet points.",
+        "",
+        `Search query: "${userRequest}"`,
+        "",
+        `Search results:\n${body}`
+      ].join("\n");
+
+    case "diagnostics":
+      return [
+        "You are Copilot Architect. The developer ran repo diagnostics.",
+        "Highlight warnings, missing configs, or issues. Give specific recommendations to improve readiness.",
+        "If everything is fine, say so briefly.",
+        "",
+        `Diagnostics output:\n${body}`
+      ].join("\n");
+
+    case "agents":
+      return [
+        "You are Copilot Architect. Custom Copilot agent templates were just installed.",
+        "List what agents were created and what each does. Give one example of invoking each in Copilot Chat.",
+        "Be brief.",
+        "",
+        `Agents install output:\n${body}`
+      ].join("\n");
+
+    case "instructions":
+      return [
+        "You are Copilot Architect. A `.github/copilot-instructions.md` file was just generated.",
+        "In 3-4 bullet points, summarize what instructions were written and how they improve Copilot assistance.",
+        "",
+        `Instructions output:\n${body}`
+      ].join("\n");
+
+    default:
+      return undefined;
+  }
+}
+
+async function streamLmResponse(
+  vscode: VscodeApiLike,
+  prompt: string,
+  stream: ChatResponseStreamLike,
+  token: unknown
+): Promise<boolean> {
+  if (!vscode.lm) return false;
+
+  try {
+    // Try progressively broader selectors — different VS Code versions expose models differently
+    let models: LanguageModelLike[] = [];
+    for (const selector of [
+      { vendor: "copilot", family: "gpt-4o" },
+      { vendor: "copilot", family: "claude-sonnet-4-5" },
+      { vendor: "copilot" },
+      {}
+    ]) {
+      models = await vscode.lm.selectChatModels(selector);
+      if (models.length) break;
+    }
+
+    if (!models.length) {
+      stream.markdown(
+        "_No Copilot language model found. Make sure GitHub Copilot Chat is installed and you are signed in, then reload the window._\n\n"
+      );
+      return false;
+    }
+
+    const model = models[0];
+
+    // VS Code 1.92+ has static .User() factory; earlier versions use constructor with role enum
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const LmMsg = (vscode as any).LanguageModelChatMessage;
+    let message: LanguageModelChatMessageLike;
+    if (typeof LmMsg?.User === "function") {
+      message = LmMsg.User(prompt) as LanguageModelChatMessageLike;
+    } else if (typeof LmMsg === "function") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const roleUser = (vscode as any).LanguageModelChatMessageRole?.User ?? 1;
+      message = new LmMsg(roleUser, prompt) as LanguageModelChatMessageLike;
+    } else {
+      message = { role: 1, content: prompt };
+    }
+
+    const lmResponse = await model.sendRequest([message], {}, token);
+
+    let hasContent = false;
+    for await (const chunk of lmResponse.text) {
+      stream.markdown(chunk);
+      hasContent = true;
+    }
+    return hasContent;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    stream.markdown(`\n> ⚠️ **Copilot LM error:** ${msg}\n\n`);
+    return false;
+  }
+}
+
+export function extractPlanSummary(markdown: string): string {
+  const titleMatch = /^#\s+(.+)$/m.exec(markdown);
+  const title = titleMatch?.[1] ?? "Implementation Plan";
+
+  // Parse ## sections into a map
+  const sectionMap: Record<string, string> = {};
+  for (const chunk of markdown.split(/\n(?=## )/)) {
+    const m = /^## (.+)\n([\s\S]*)/.exec(chunk);
+    if (m) sectionMap[m[1].trim()] = m[2].trim();
+  }
+
+  const lines: string[] = [`# ${title}`, ""];
+
+  const files = sectionMap["Likely Files To Modify"];
+  if (files) {
+    lines.push("## Files to modify", files, "");
+  }
+
+  const steps = sectionMap["Step-by-Step Implementation Plan"];
+  if (steps) {
+    lines.push("## Implementation steps", steps, "");
+  }
+
+  const cmds = sectionMap["Validation Commands"];
+  if (cmds) {
+    lines.push("## Run to validate", cmds, "");
+  }
+
+  const risks = sectionMap["Risks"];
+  if (risks) {
+    const riskItems = risks
+      .split(/\n(?=-)/)
+      .map((r) => r.replace(/\s*Mitigation:[\s\S]*/, "").trim())
+      .filter((r) => r.startsWith("-"));
+    if (riskItems.length) {
+      lines.push("## Risks", riskItems.join("\n"), "");
+    }
+  }
+
+  const questions = sectionMap["Open Questions"];
+  if (questions) {
+    lines.push("## Open questions", questions, "");
+  }
+
+  return lines.join("\n").trim();
+}
+
+// Lines that are internal CLI noise the user doesn't need to see
+const NOISE_PATTERNS = [
+  /^Copilot Architect:/,                 // CLI banner
+  /^\s*>\s*(copilot-architect|node)/,    // npm/node invocation lines
+  /\/(Users|home|tmp)\//,               // absolute file paths
+  /^Plan (JSON|Markdown):/,             // artifact path echoes
+  /^Latest (JSON|Markdown):/,
+  /^Validation (JSON|Markdown|Logs):/,
+  /^Review (JSON|Markdown):/,
+  /^Status:\s*draft/,                    // internal draft status
+];
+
+export function formatCliOutputAsMarkdown(stdout: string): string {
+  const lines = stdout.trim().split("\n");
+  const out: string[] = [];
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      out.push("");
+      continue;
+    }
+
+    // Drop internal noise lines
+    if (NOISE_PATTERNS.some((p) => p.test(trimmed))) {
+      continue;
+    }
+
+    // Already a markdown list item — keep as-is
+    if (/^\s*[-*]\s/.test(line)) {
+      out.push(trimmed);
+      continue;
+    }
+
+    // "Key: value" line — bold the key
+    const colonMatch = /^([A-Za-z][A-Za-z0-9 ]{0,30}):\s(.+)$/.exec(trimmed);
+    if (colonMatch) {
+      out.push(`**${colonMatch[1]}:** ${colonMatch[2]}`);
+      continue;
+    }
+
+    out.push(trimmed);
+  }
+
+  // Collapse consecutive blank lines and strip leading/trailing blanks
+  const collapsed: string[] = [];
+  for (const line of out) {
+    if (!line && collapsed.length && !collapsed[collapsed.length - 1]) continue;
+    collapsed.push(line);
+  }
+  while (collapsed.length && !collapsed[0]) collapsed.shift();
+  while (collapsed.length && !collapsed[collapsed.length - 1]) collapsed.pop();
+
+  return collapsed.join("\n");
 }
 
 export function getChatHelpText(): string {

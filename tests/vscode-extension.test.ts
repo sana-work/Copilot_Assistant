@@ -60,7 +60,11 @@ describe("VS Code extension shell", () => {
 
   it("activates in a fake extension host and registers commands through CLI/MCP shims", async () => {
     const fake = createFakeVscode();
-    const context: ExtensionContextLike = { subscriptions: [] };
+    // extensionPath = .../ext-root/packages/vscode-extension → resolveExtensionRoot goes two levels up
+    const context: ExtensionContextLike = {
+      subscriptions: [],
+      extensionPath: "/workspace/ext-root/packages/vscode-extension"
+    };
     const cliRequests: CliRunRequest[] = [];
     const mcpRequests: CliRunRequest[] = [];
     const runner = {
@@ -93,11 +97,11 @@ describe("VS Code extension shell", () => {
       COPILOT_ARCHITECT_COMMANDS.length
     );
     expect(cliRequests.map((request) => request.args)).toEqual([
-      ["analyze"],
-      ["plan", "Add invoice approval workflow"]
+      ["analyze", "--path", "/workspace/repo"],
+      ["plan", "Add invoice approval workflow", "--path", "/workspace/repo"]
     ]);
-    expect(cliRequests[0]?.cwd).toBe("/workspace/repo");
-    expect(mcpRequests[0]?.args).toEqual(["mcp"]);
+    expect(cliRequests[0]?.cwd).toBe("/workspace/ext-root");
+    expect(mcpRequests[0]?.args).toEqual(["mcp", "--path", "/workspace/repo"]);
     expect(api.getState().mcpStatus).toBe("running");
 
     deactivate();
