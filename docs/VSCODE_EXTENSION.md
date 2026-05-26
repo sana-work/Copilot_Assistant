@@ -15,11 +15,27 @@ The `@copilot-architect/vscode-extension` package is a thin VS Code shell around
 
 ## Loading the Extension
 
-The extension is not published to the VS Code Marketplace. Load it from source using the VS Code Extension Development Host:
+The extension is not published to the VS Code Marketplace. Load it from source using the VS Code Extension Development Host.
 
-1. Open the Copilot Architect monorepo in VS Code.
-2. Run `npm run build` in the integrated terminal.
-3. Press `F5` (or **Run > Start Debugging**) — VS Code opens a new **Extension Development Host** window with the extension active.
+**The repo includes `.vscode/launch.json` and `.vscode/tasks.json` which wire up F5 automatically.**
+
+### Steps
+
+1. Open the Copilot Architect monorepo folder in VS Code (`code /path/to/Copilot_Assistant`).
+2. Press `F5` (or **Run > Start Debugging**).
+   - VS Code runs `npm run build` automatically (the pre-launch task).
+   - A new **Extension Development Host** window opens with the extension active.
+3. In the new window, the Copilot Architect icon appears in the activity bar. You are ready to use it.
+
+### What happens under the hood
+
+- `launch.json` tells VS Code to start an `extensionHost` process with `--extensionDevelopmentPath` pointing at `packages/vscode-extension`.
+- `tasks.json` defines the `build` task that runs `npm run build` before launch so `dist/index.js` is always up to date.
+- The Extension Development Host is a separate VS Code window that behaves like a normal VS Code but loads your local extension.
+
+### If `F5` still shows the Command Palette or a debugger picker
+
+This means VS Code opened a different folder (not the Copilot Architect repo root). Confirm the folder shown in the Explorer sidebar is the repo root (`Copilot_Assistant/`). The `.vscode/` folder must be at the root for launch config to be picked up.
 
 Alternatively, package the extension with `vsce` and install the `.vsix` once it is available as an internal artifact.
 
