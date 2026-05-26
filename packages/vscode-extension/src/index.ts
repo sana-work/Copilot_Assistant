@@ -416,11 +416,37 @@ export function activate(
         }
       }
 
-      state.lastCommand = `workspace scan (${registered}/${subDirs.length} repos)`;
-      state.lastExitCode = registered === subDirs.length ? 0 : 1;
+      if (registered === 0) {
+        vscode.window.showErrorMessage("No repos could be registered. Check the Output channel for details.");
+        return;
+      }
+
+      // 3. Analyze each registered repo so repo-map.json is created in every sub-repo folder
+      outputChannel.appendLine(`\n[workspace scan] analyzing ${registered} repo(s)…`);
+      vscode.window.showInformationMessage(`Registered ${registered} repos — analyzing each one, please wait…`);
+      for (const subDir of subDirs.slice(0, registered)) {
+        const repoName = path.basename(subDir);
+        outputChannel.appendLine(`  → analyze: ${repoName}`);
+        await runner.run({
+          args: ["analyze", "--path", subDir],
+          cwd: extensionRoot,
+          onOutput: (_s, t) => outputChannel.appendLine(t)
+        });
+      }
+
+      // 4. Build a combined workspace index (creates index.json in every sub-repo folder)
+      outputChannel.appendLine(`\n[workspace scan] building workspace index…`);
+      await runner.run({
+        args: ["workspace", "index", "--path", workspaceRoot],
+        cwd: extensionRoot,
+        onOutput: (_s, t) => outputChannel.appendLine(t)
+      });
+
+      state.lastCommand = `workspace scan + index (${registered} repos)`;
+      state.lastExitCode = 0;
       dashboard.refresh();
       vscode.window.showInformationMessage(
-        `Workspace ready: ${registered}/${subDirs.length} repos registered. Run Build Index to index all repos.`
+        `Done! ${registered} repos analyzed and indexed. Use @architect /search or /plan to work across all repos.`
       );
     })
   );
