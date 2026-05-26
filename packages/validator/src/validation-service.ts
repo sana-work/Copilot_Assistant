@@ -323,7 +323,7 @@ function runCommandAttempt(
   );
 
   return new Promise((resolve) => {
-    const child = spawn(command.command, command.args, {
+    const child = spawn(resolveExecutable(command.command), command.args, {
       cwd,
       shell: false,
       env: process.env
@@ -667,4 +667,12 @@ function timestampId(): string {
 
 async function writeTextFile(filePath: string, contents: string): Promise<void> {
   await writeFile(filePath, contents, "utf8");
+}
+
+// On Windows, npm/npx/yarn/pnpm must be invoked as *.cmd when shell:false
+function resolveExecutable(cmd: string): string {
+  if (process.platform !== "win32") return cmd;
+  const npmLike = new Set(["npm", "npx", "yarn", "pnpm"]);
+  const base = path.basename(cmd, ".cmd").toLowerCase();
+  return npmLike.has(base) ? `${base}.cmd` : cmd;
 }

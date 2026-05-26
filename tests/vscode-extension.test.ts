@@ -100,7 +100,10 @@ describe("VS Code extension shell", () => {
       ["analyze", "--path", "/workspace/repo"],
       ["plan", "Add invoice approval workflow", "--path", "/workspace/repo"]
     ]);
-    expect(cliRequests[0]?.cwd).toBe("/workspace/ext-root");
+    // Use path.resolve so the expected value matches platform-specific separator/drive letter
+    expect(cliRequests[0]?.cwd).toBe(
+      path.resolve("/workspace/ext-root/packages/vscode-extension", "..", "..")
+    );
     expect(mcpRequests[0]?.args).toEqual(["mcp", "--path", "/workspace/repo"]);
     expect(api.getState().mcpStatus).toBe("running");
 

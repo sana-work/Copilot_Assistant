@@ -116,7 +116,8 @@ describe("multi-repo workspace support", () => {
     });
 
     expect(index.results).toHaveLength(3);
-    expect(index.repoMapPath).toContain(".copilot-architect/repo-map.json");
+    // Normalize separators so assertion passes on both Windows (\) and Unix (/)
+    expect(index.repoMapPath.replace(/\\/g, "/")).toContain(".copilot-architect/repo-map.json");
     expect(search.combinedResults.map((result) => result.repoName)).toContain(
       "billing-service"
     );

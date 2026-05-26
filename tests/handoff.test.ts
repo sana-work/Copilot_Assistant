@@ -130,7 +130,8 @@ describe("HandoffService", () => {
     });
 
     expect(result.gitCheckpoint.created).toBe(true);
-    expect(result.gitCheckpoint.checkpointPath).toContain(
+    // Normalize separators so assertion passes on both Windows (\) and Unix (/)
+    expect(result.gitCheckpoint.checkpointPath?.replace(/\\/g, "/")).toContain(
       ".copilot-architect/diagnostics"
     );
   });
