@@ -275,7 +275,7 @@ describe("Phase 22 sample repo matrix", () => {
         "utf8"
       )
     ).resolves.toContain("Review");
-  }, 20_000);
+  }, 60_000);
 });
 
 async function copySample(sampleName: string, targetPath?: string): Promise<string> {

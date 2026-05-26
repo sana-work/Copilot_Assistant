@@ -323,11 +323,14 @@ function runCommandAttempt(
   );
 
   return new Promise((resolve) => {
-    // On Windows, npm/yarn/.cmd scripts cannot be spawned with shell:false (EINVAL).
-    // Use the shell only on Windows; keep shell:false on Unix to avoid injection risk.
-    const child = spawn(command.command, command.args, {
+    // On Windows, npm/npx/yarn/pnpm are .cmd batch files that cannot be spawned with
+    // shell:false (throws EINVAL). Invoke them via cmd.exe /c to preserve exit codes.
+    // All other commands (node, python, git, etc.) are real executables — keep shell:false
+    // to avoid cmd.exe quoting issues with -e arguments and semicolons.
+    const [executable, spawnArgs] = resolveSpawnTarget(command.command, command.args);
+    const child = spawn(executable, spawnArgs, {
       cwd,
-      shell: process.platform === "win32",
+      shell: false,
       env: process.env
     });
     let timedOut = false;
@@ -669,5 +672,17 @@ function timestampId(): string {
 
 async function writeTextFile(filePath: string, contents: string): Promise<void> {
   await writeFile(filePath, contents, "utf8");
+}
+
+// On Windows, npm/npx/yarn/pnpm are .cmd batch files and cannot be spawned directly
+// with shell:false (EINVAL). Route them through cmd.exe /c to preserve exit codes.
+// node/python/git/etc. are real executables — run them directly so -e args and
+// semicolons are not reinterpreted by cmd.exe.
+function resolveSpawnTarget(cmd: string, args: string[]): [string, string[]] {
+  if (process.platform !== "win32") return [cmd, args];
+  const npmLike = new Set(["npm", "npx", "yarn", "pnpm"]);
+  const base = path.basename(cmd, ".cmd").toLowerCase();
+  if (npmLike.has(base)) return ["cmd.exe", ["/c", cmd, ...args]];
+  return [cmd, args];
 }
 
