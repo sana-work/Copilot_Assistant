@@ -451,7 +451,8 @@ export function deactivate(): void {
 export class NodeCliRunner implements CliRunner {
   async run(request: CliRunRequest): Promise<CliRunResult> {
     return new Promise((resolve) => {
-      const child = spawn(getNpmExecutable(), ["run", "cli", "--", ...request.args], {
+      const [exe, cliArgs] = resolveNpmSpawn(["run", "cli", "--", ...request.args]);
+      const child = spawn(exe, cliArgs, {
         cwd: request.cwd,
         shell: false,
         env: { ...process.env, FORCE_COLOR: "0" }
@@ -514,7 +515,8 @@ export class TerminalMcpStarter implements McpStarter {
 
 export class NodeMcpStarter implements McpStarter {
   start(request: CliRunRequest): DisposableLike {
-    const child = spawn(getNpmExecutable(), ["run", "cli", "--", ...request.args], {
+    const [exe, cliArgs] = resolveNpmSpawn(["run", "cli", "--", ...request.args]);
+    const child = spawn(exe, cliArgs, {
       cwd: request.cwd,
       shell: false,
       env: { ...process.env, FORCE_COLOR: "0" }
@@ -706,6 +708,15 @@ function resolveExtensionRoot(context: ExtensionContextLike): string {
 
 function getNpmExecutable(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+// On Windows, npm.cmd cannot be spawned with shell:false (EINVAL).
+// Route through cmd.exe /c so the .cmd file is executed correctly.
+function resolveNpmSpawn(args: string[]): [string, string[]] {
+  if (process.platform === "win32") {
+    return ["cmd.exe", ["/c", "npm.cmd", ...args]];
+  }
+  return ["npm", args];
 }
 
 function attachProcessOutput(
