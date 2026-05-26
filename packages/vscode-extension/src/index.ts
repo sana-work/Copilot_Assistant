@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -359,6 +359,69 @@ export function activate(
       await vscode.commands.executeCommand?.("vscode.openFolder", uris[0], {
         forceNewWindow: true
       });
+    }),
+    vscode.commands.registerCommand("copilotArchitect.workspaceScan", async () => {
+      // Ask the user which folder contains the sub-repos (e.g. repos/, services/, etc.)
+      const uris = await vscode.window.showOpenDialog?.({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        openLabel: "Select Repos Folder",
+        title: "Select the folder whose immediate sub-directories are your repositories"
+      });
+      const reposDir = uris?.[0]?.fsPath;
+      if (!reposDir) return;
+
+      let subDirs: string[];
+      try {
+        const entries = await readdir(reposDir, { withFileTypes: true });
+        subDirs = entries
+          .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+          .map((e) => path.join(reposDir, e.name));
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Could not read folder: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return;
+      }
+
+      if (subDirs.length === 0) {
+        vscode.window.showInformationMessage("No sub-directories found in the selected folder.");
+        return;
+      }
+
+      outputChannel.appendLine(`[workspace scan] ${subDirs.length} repo(s) found in ${reposDir}`);
+      outputChannel.show(true);
+
+      // 1. Initialize workspace at the workspace root
+      await runner.run({
+        args: ["workspace", "init", "--path", workspaceRoot],
+        cwd: extensionRoot,
+        onOutput: (_s, t) => outputChannel.appendLine(t)
+      });
+
+      // 2. Register each sub-directory as a named repo
+      let registered = 0;
+      for (const subDir of subDirs) {
+        const repoName = path.basename(subDir);
+        const result = await runner.run({
+          args: ["workspace", "add", "--path", workspaceRoot, "--repo", subDir, "--name", repoName],
+          cwd: extensionRoot,
+          onOutput: (_s, t) => outputChannel.appendLine(t)
+        });
+        if (result.exitCode === 0) {
+          registered++;
+          outputChannel.appendLine(`✓ registered: ${repoName}`);
+        } else {
+          outputChannel.appendLine(`✗ failed:     ${repoName}`);
+        }
+      }
+
+      state.lastCommand = `workspace scan (${registered}/${subDirs.length} repos)`;
+      state.lastExitCode = registered === subDirs.length ? 0 : 1;
+      dashboard.refresh();
+      vscode.window.showInformationMessage(
+        `Workspace ready: ${registered}/${subDirs.length} repos registered. Run Build Index to index all repos.`
+      );
     })
   );
 
@@ -647,7 +710,7 @@ export function createDashboardHtml(state: ExtensionState): string {
     "</head>",
     "<body>",
     "<h1>Copilot Architect</h1>",
-    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo in New Window</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
+    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo in New Window</a> <a href="command:copilotArchitect.workspaceScan">Scan &amp; Register Sub-repos</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
     '<div class="grid">',
     ...sections.map(
       (section) => `<section><h2>${section.title}</h2><p>${section.body}</p></section>`
