@@ -2929,7 +2929,7 @@ async function runDemo(options: {
 
   // Step 1: Analyze repo
   let repoRoot = path.resolve(startPath ?? process.cwd());
-  const analyzeStep = await runStep("Analyze repo structure", async () => {
+  await runStep("Analyze repo structure", async () => {
     const result = await new RepoDiscoveryService().analyze({ startPath });
     repoRoot = result.repoRoot;
     const map = result.repoMap;

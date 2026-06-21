@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -9,22 +9,29 @@ import {
 import {
   CURRENT_SCHEMA_VERSION,
   type CodeSymbol,
+  type ScannedEntry,
   getArtifactDirectoryPath,
+  isBinaryPath,
   readJsonFile,
+  scanRepository,
   writeJsonFile
 } from "@copilot-architect/shared";
 
 import type {
+  DocumentTokens,
   IndexedFile,
   IndexOptions,
   IndexResult,
   IndexStats,
   IndexStatus,
   LocalIndex,
+  SearchAnchor,
   SearchOptions,
   SearchResponse,
   SearchResult,
+  SearchStats,
   SimilarFeatureOptions,
+  TokenCounts,
   WorkspaceIndexOptions,
   WorkspaceIndexResult,
   WorkspaceSearchOptions,
@@ -37,6 +44,15 @@ const INDEX_FILE_NAME = "index.json";
 const STATUS_FILE_NAME = "status.json";
 const DEFAULT_MAX_FILE_BYTES = 512_000;
 const PREVIEW_LENGTH = 2_000;
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
+const RRF_K = 60;
+const FIELD_WEIGHTS: Record<string, number> = {
+  path: 3,
+  symbols: 2,
+  preview: 1,
+  imports: 0.8
+};
 
 export class IndexingService {
   async index(options: IndexOptions = {}): Promise<IndexResult> {
@@ -55,7 +71,8 @@ export class IndexingService {
       indexVersion: INDEX_VERSION,
       repoRoot,
       documents,
-      stats: createStats(documents)
+      stats: createStats(documents),
+      searchStats: computeSearchStats(documents)
     };
     const mode = options.rebuild ? "rebuild" : existingIndex ? "incremental" : "full";
 
@@ -213,81 +230,59 @@ async function scanDocuments(
   const existingByPath = new Map(
     existingIndex?.documents.map((document) => [document.relativePath, document]) ?? []
   );
+  const entries = await scanRepository(repoRoot);
   const documents: IndexedFile[] = [];
 
-  await walk(repoRoot, repoRoot, documents, existingByPath, options);
+  for (const entry of entries) {
+    const document = await indexEntry(entry, existingByPath, options);
+    if (document) {
+      documents.push(document);
+    }
+  }
 
   return documents.sort((left, right) =>
     left.relativePath.localeCompare(right.relativePath)
   );
 }
 
-async function walk(
-  repoRoot: string,
-  directory: string,
-  documents: IndexedFile[],
+async function indexEntry(
+  entry: ScannedEntry,
   existingByPath: Map<string, IndexedFile>,
   options: { maxFileBytes: number }
-): Promise<void> {
-  const entries = await readdir(directory, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (ignoredNames.has(entry.name)) {
-      continue;
-    }
-
-    const fullPath = path.join(directory, entry.name);
-
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      await walk(repoRoot, fullPath, documents, existingByPath, options);
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    const fileStats = await stat(fullPath);
-    const relativePath = normalizeRelativePath(path.relative(repoRoot, fullPath));
-
-    if (fileStats.size > options.maxFileBytes || isBinaryFile(relativePath)) {
-      continue;
-    }
-
-    const text = await readTextFile(fullPath);
-
-    if (text === undefined) {
-      continue;
-    }
-
-    const contentHash = sha256(text);
-    const existing = existingByPath.get(relativePath);
-
-    if (
-      existing &&
-      existing.contentHash === contentHash &&
-      existing.fileSizeBytes === fileStats.size &&
-      existing.modifiedTimeMs === fileStats.mtimeMs
-    ) {
-      documents.push(existing);
-      continue;
-    }
-
-    documents.push(
-      createIndexedFile({
-        fullPath,
-        relativePath,
-        text,
-        contentHash,
-        modifiedTimeMs: fileStats.mtimeMs,
-        fileSizeBytes: fileStats.size
-      })
-    );
+): Promise<IndexedFile | undefined> {
+  if (entry.sizeBytes > options.maxFileBytes || isBinaryPath(entry.relativePath)) {
+    return undefined;
   }
+
+  const text = await readTextFile(entry.absolutePath);
+  if (text === undefined) {
+    return undefined;
+  }
+
+  const contentHash = sha256(text);
+  const existing = existingByPath.get(entry.relativePath);
+
+  if (
+    existing &&
+    existing.contentHash === contentHash &&
+    existing.fileSizeBytes === entry.sizeBytes &&
+    existing.modifiedTimeMs === entry.modifiedTimeMs
+  ) {
+    // Backfill search tokens for documents indexed before this field existed,
+    // so every written index has complete precomputed search data.
+    return existing.searchTokens
+      ? existing
+      : { ...existing, searchTokens: computeDocumentTokens(existing) };
+  }
+
+  return createIndexedFile({
+    fullPath: entry.absolutePath,
+    relativePath: entry.relativePath,
+    text,
+    contentHash,
+    modifiedTimeMs: entry.modifiedTimeMs,
+    fileSizeBytes: entry.sizeBytes
+  });
 }
 
 function createIndexedFile(input: {
@@ -299,8 +294,7 @@ function createIndexedFile(input: {
   fileSizeBytes: number;
 }): IndexedFile {
   const extension = path.extname(input.relativePath);
-
-  return {
+  const file: IndexedFile = {
     filePath: input.fullPath,
     relativePath: input.relativePath,
     extension,
@@ -316,100 +310,241 @@ function createIndexedFile(input: {
     isDocFile: isDocFile(input.relativePath),
     indexedAt: new Date().toISOString()
   };
+
+  return { ...file, searchTokens: computeDocumentTokens(file) };
 }
 
-function searchIndex(index: LocalIndex, query: string, limit: number): SearchResult[] {
-  const normalizedQuery = query.trim().toLowerCase();
-  const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+// --- Hybrid search: BM25 (lexical) + path/symbol signal (structural) fused via RRF ---
+//
+// Two complementary signals:
+//   Lexical  — BM25 with camelCase tokenization, field weights, and IDF length normalization.
+//   Structural — fraction of query terms found in file path and symbol names. This is the
+//               right "semantic" signal for code search: a file called invoiceApproval.ts
+//               with a symbol approveInvoice is structurally about "invoice approval"
+//               regardless of how long or short its content is. TF-IDF cosine was
+//               avoided here because it rewards very short documents that happen to
+//               contain all query terms (e.g. a 3-word README beats a rich source file).
+// Results are fused via Reciprocal Rank Fusion (RRF).
 
-  if (queryTerms.length === 0) {
-    return [];
+function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  for (const chunk of text.split(/[^a-zA-Z0-9]+/)) {
+    if (!chunk) continue;
+    // Split camelCase ("invoiceApproval" → ["invoice","Approval"]) and
+    // split acronym boundaries ("HTTPSClient" → ["HTTPS","Client"])
+    for (const sub of chunk.split(/(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)) {
+      const lower = sub.toLowerCase();
+      if (lower.length >= 2) tokens.push(lower);
+    }
   }
-
-  return index.documents
-    .map((document) => scoreDocument(document, normalizedQuery, queryTerms))
-    .filter((result): result is SearchResult => Boolean(result))
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.relativePath.localeCompare(right.relativePath)
-    )
-    .slice(0, limit);
+  return tokens;
 }
 
-function scoreDocument(
-  document: IndexedFile,
-  normalizedQuery: string,
-  queryTerms: string[]
-): SearchResult | undefined {
-  const matchedFields = new Set<string>();
-  let score = 0;
-  const pathText = document.relativePath.toLowerCase();
-  const previewText = document.textPreview.toLowerCase();
-  const symbolText = document.symbols
-    .map((symbol) => `${symbol.name} ${symbol.kind}`)
-    .join(" ")
-    .toLowerCase();
-  const importText = document.imports.join(" ").toLowerCase();
-
-  if (pathText.includes(normalizedQuery)) {
-    score += 30;
-    matchedFields.add("path");
+function tokenCounts(text: string): TokenCounts {
+  const counts: TokenCounts = {};
+  for (const token of tokenize(text)) {
+    counts[token] = (counts[token] ?? 0) + 1;
   }
+  return counts;
+}
 
-  if (symbolText.includes(normalizedQuery)) {
-    score += 20;
-    matchedFields.add("symbols");
-  }
+function computeDocumentTokens(doc: IndexedFile): DocumentTokens {
+  return {
+    path: tokenCounts(doc.relativePath),
+    symbols: tokenCounts(doc.symbols.map((symbol) => symbol.name).join(" ")),
+    preview: tokenCounts(doc.textPreview),
+    imports: tokenCounts(doc.imports.join(" "))
+  };
+}
 
-  if (previewText.includes(normalizedQuery)) {
-    score += 12;
-    matchedFields.add("preview");
-  }
+function documentTokensFor(doc: IndexedFile): DocumentTokens {
+  return doc.searchTokens ?? computeDocumentTokens(doc);
+}
 
-  if (importText.includes(normalizedQuery)) {
-    score += 10;
-    matchedFields.add("imports");
-  }
+function fieldLength(counts: TokenCounts): number {
+  let total = 0;
+  for (const value of Object.values(counts)) total += value;
+  return total;
+}
 
-  for (const term of queryTerms) {
-    if (pathText.includes(term)) {
-      score += 8;
-      matchedFields.add("path");
+// Precompute corpus IDF + average length once per index build (persisted in
+// index.json) so search no longer rebuilds these over the whole corpus per query.
+function computeSearchStats(documents: IndexedFile[]): SearchStats {
+  const termDocFreq: TokenCounts = {};
+  let totalLength = 0;
+  const fieldTotals: Record<string, number> = {};
+
+  for (const doc of documents) {
+    const tokens = documentTokensFor(doc);
+    const seen = new Set<string>();
+    let docLength = 0;
+    for (const [fieldName, counts] of Object.entries(tokens) as [string, TokenCounts][]) {
+      const fl = fieldLength(counts);
+      fieldTotals[fieldName] = (fieldTotals[fieldName] ?? 0) + fl;
+      docLength += fl;
+      for (const term of Object.keys(counts)) {
+        if (!seen.has(term)) {
+          seen.add(term);
+          termDocFreq[term] = (termDocFreq[term] ?? 0) + 1;
+        }
+      }
     }
-
-    if (symbolText.includes(term)) {
-      score += 6;
-      matchedFields.add("symbols");
-    }
-
-    if (previewText.includes(term)) {
-      score += 3;
-      matchedFields.add("preview");
-    }
-
-    if (importText.includes(term)) {
-      score += 2;
-      matchedFields.add("imports");
-    }
+    totalLength += docLength;
   }
 
-  if (score === 0) {
-    return undefined;
+  const n = documents.length;
+  const avgFieldLengths: Record<string, number> = {};
+  for (const [fieldName, total] of Object.entries(fieldTotals)) {
+    avgFieldLengths[fieldName] = n > 0 ? total / n : 1;
   }
 
   return {
-    filePath: document.filePath,
-    relativePath: document.relativePath,
-    score,
-    languageGuess: document.languageGuess,
-    textPreview: document.textPreview,
-    matchedFields: [...matchedFields].sort(),
-    symbols: document.symbols,
-    imports: document.imports,
-    isTestFile: document.isTestFile,
-    isConfigFile: document.isConfigFile,
-    isDocFile: document.isDocFile
+    docCount: n,
+    avgDocLength: n > 0 ? totalLength / n : 1,
+    termDocFreq,
+    avgFieldLengths
   };
+}
+
+function bm25Score(
+  fields: DocumentTokens,
+  queryTerms: string[],
+  stats: SearchStats
+): { score: number; matchedFields: Set<string> } {
+  const matchedFields = new Set<string>();
+  let total = 0;
+  const fieldEntries = Object.entries(fields);
+
+  for (const term of queryTerms) {
+    const df = stats.termDocFreq[term] ?? 0;
+    if (df === 0) continue;
+    const idf = Math.log((stats.docCount - df + 0.5) / (df + 0.5) + 1);
+    for (const [fieldName, counts] of fieldEntries) {
+      const tf = counts[term] ?? 0;
+      if (tf === 0) continue;
+      matchedFields.add(fieldName);
+      const weight = FIELD_WEIGHTS[fieldName] ?? 1;
+      const dl = fieldLength(counts);
+      // Use the per-field average so that a long preview field and a short path
+      // field are each normalized against their own corpus average, rather than
+      // dividing the total average equally across all 4 fields.
+      const avgFieldLength =
+        stats.avgFieldLengths?.[fieldName] ??
+        stats.avgDocLength / Math.max(fieldEntries.length, 1);
+      const ntf =
+        (tf * (BM25_K1 + 1)) /
+        (tf + BM25_K1 * (1 - BM25_B + (BM25_B * dl) / avgFieldLength));
+      total += weight * idf * ntf;
+    }
+  }
+
+  return { score: total, matchedFields };
+}
+
+function pathSymbolScore(fields: DocumentTokens, queryTerms: string[]): number {
+  if (queryTerms.length === 0) return 0;
+  let matches = 0;
+  for (const term of queryTerms) {
+    if (fields.path[term]) matches++;
+    if (fields.symbols[term]) matches++;
+  }
+  return matches / (queryTerms.length * 2);
+}
+
+// Best symbol whose name shares the most query terms — gives file:line precision.
+function bestSymbolAnchor(
+  doc: IndexedFile,
+  queryTerms: string[]
+): SearchAnchor | undefined {
+  let best: { symbol: CodeSymbol; matches: number } | undefined;
+
+  for (const symbol of doc.symbols) {
+    const nameTokens = new Set(tokenize(symbol.name));
+    let matches = 0;
+    for (const term of queryTerms) {
+      if (nameTokens.has(term)) matches++;
+    }
+    if (matches > 0 && (!best || matches > best.matches)) {
+      best = { symbol, matches };
+    }
+  }
+
+  if (!best) return undefined;
+
+  return {
+    symbol: best.symbol.name,
+    kind: best.symbol.kind,
+    line: best.symbol.startLine
+  };
+}
+
+function searchIndex(index: LocalIndex, query: string, limit: number): SearchResult[] {
+  const queryTerms = [...new Set(tokenize(query))];
+  if (queryTerms.length === 0) return [];
+
+  const stats = index.searchStats ?? computeSearchStats(index.documents);
+
+  type Entry = {
+    doc: IndexedFile;
+    lexical: number;
+    semantic: number;
+    matchedFields: Set<string>;
+  };
+
+  const entries: Entry[] = index.documents.map((doc) => {
+    const fields = documentTokensFor(doc);
+    const { score: lexical, matchedFields } = bm25Score(fields, queryTerms, stats);
+    const semantic = pathSymbolScore(fields, queryTerms);
+    return { doc, lexical, semantic, matchedFields };
+  });
+
+  const byLexical = [...entries].sort((a, b) => b.lexical - a.lexical);
+  const bySemantic = [...entries].sort((a, b) => b.semantic - a.semantic);
+
+  const rrfMap = new Map<string, { entry: Entry; rrf: number }>();
+
+  for (let i = 0; i < byLexical.length; i++) {
+    const e = byLexical[i];
+    if (e.lexical === 0) break;
+    const key = e.doc.relativePath;
+    rrfMap.set(key, {
+      entry: e,
+      rrf: (rrfMap.get(key)?.rrf ?? 0) + 1 / (RRF_K + i + 1)
+    });
+  }
+
+  for (let i = 0; i < bySemantic.length; i++) {
+    const e = bySemantic[i];
+    if (e.semantic === 0) break;
+    const key = e.doc.relativePath;
+    const existing = rrfMap.get(key);
+    rrfMap.set(key, {
+      entry: existing?.entry ?? e,
+      rrf: (existing?.rrf ?? 0) + 1 / (RRF_K + i + 1)
+    });
+  }
+
+  return [...rrfMap.values()]
+    .sort(
+      (a, b) =>
+        b.rrf - a.rrf ||
+        a.entry.doc.relativePath.localeCompare(b.entry.doc.relativePath)
+    )
+    .slice(0, limit)
+    .map(({ entry, rrf }) => ({
+      filePath: entry.doc.filePath,
+      relativePath: entry.doc.relativePath,
+      score: Math.round(rrf * 1000 * 100) / 100,
+      languageGuess: entry.doc.languageGuess,
+      textPreview: entry.doc.textPreview,
+      matchedFields: [...entry.matchedFields].sort(),
+      symbols: entry.doc.symbols,
+      imports: entry.doc.imports,
+      isTestFile: entry.doc.isTestFile,
+      isConfigFile: entry.doc.isConfigFile,
+      isDocFile: entry.doc.isDocFile,
+      anchor: bestSymbolAnchor(entry.doc, queryTerms)
+    }));
 }
 
 function extractSymbols(filePath: string, text: string): CodeSymbol[] {
@@ -571,10 +706,6 @@ function getStatusPath(repoRoot: string): string {
   return path.join(getArtifactDirectoryPath(repoRoot, "index"), STATUS_FILE_NAME);
 }
 
-function normalizeRelativePath(relativePath: string): string {
-  return relativePath.split(path.sep).join("/");
-}
-
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -642,10 +773,6 @@ function isDocFile(filePath: string): boolean {
   return lower.endsWith(".md") || lower.startsWith("docs/") || lower.endsWith(".rst");
 }
 
-function isBinaryFile(filePath: string): boolean {
-  return binaryExtensions.has(path.extname(filePath).toLowerCase());
-}
-
 function inferSymbolKind(matchText: string): string {
   if (matchText.includes("class")) return "class";
   if (matchText.includes("interface")) return "interface";
@@ -666,42 +793,3 @@ function dedupeSymbols(symbols: CodeSymbol[]): CodeSymbol[] {
 
   return [...byKey.values()];
 }
-
-const ignoredNames = new Set([
-  ".git",
-  ".copilot-architect",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
-  ".next",
-  ".angular",
-  "target",
-  ".venv",
-  "venv",
-  "__pycache__",
-  ".pytest_cache",
-  "vendor",
-  ".idea",
-  ".vscode",
-  ".DS_Store"
-]);
-
-const binaryExtensions = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".ico",
-  ".pdf",
-  ".zip",
-  ".gz",
-  ".tar",
-  ".jar",
-  ".class",
-  ".exe",
-  ".dll",
-  ".so",
-  ".dylib"
-]);

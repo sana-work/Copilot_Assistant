@@ -62,6 +62,19 @@ export function renderFeaturePlanMarkdown(plan: FeaturePlanArtifact): string {
         )
     ),
     "",
+    "## Endpoints To Touch",
+    renderBullets(
+      plan.relatedEndpoints.map((endpoint) => {
+        const location = endpoint.line
+          ? `${endpoint.filePath}:${endpoint.line}`
+          : endpoint.filePath;
+        const test = endpoint.testFile
+          ? `test \`${endpoint.testFile}\``
+          : "no nearby test";
+        return `${endpoint.method} ${endpoint.routePath} (\`${location}\`) - ${test}`;
+      })
+    ),
+    "",
     "## Likely Files To Modify",
     renderBullets(plan.likelyFilesToModify),
     "",

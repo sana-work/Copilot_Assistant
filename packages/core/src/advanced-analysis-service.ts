@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -14,9 +14,12 @@ import {
   type RouteApiEndpoint,
   type TestRelationship,
   type UniversalRepoMap,
+  findRepoRoot,
   getArtifactDirectoryPath,
   getArtifactFilePath,
-  readJsonFile
+  isBinaryPath,
+  readJsonFile,
+  scanRepository
 } from "@copilot-architect/shared";
 
 import { RepoDiscoveryService } from "./repo-discovery.js";
@@ -155,51 +158,19 @@ async function loadOrCreateRepoMap(startPath: string): Promise<UniversalRepoMap>
 }
 
 async function scanRepoFiles(repoRoot: string): Promise<ScannedFile[]> {
+  const entries = await scanRepository(repoRoot);
   const files: ScannedFile[] = [];
-  await walk(repoRoot, repoRoot, files);
-  return files.sort((left, right) =>
-    left.relativePath.localeCompare(right.relativePath)
-  );
-}
-
-async function walk(
-  repoRoot: string,
-  directory: string,
-  files: ScannedFile[]
-): Promise<void> {
-  const entries = await readdir(directory, { withFileTypes: true });
 
   for (const entry of entries) {
-    if (ignoredNames.has(entry.name)) {
-      continue;
-    }
-
-    const fullPath = path.join(directory, entry.name);
-
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      await walk(repoRoot, fullPath, files);
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    const stats = await stat(fullPath);
-    const relativePath = normalizeRelativePath(path.relative(repoRoot, fullPath));
     const scanned: ScannedFile = {
-      relativePath,
-      fullPath,
-      mtimeMs: stats.mtimeMs
+      relativePath: entry.relativePath,
+      fullPath: entry.absolutePath,
+      mtimeMs: entry.modifiedTimeMs
     };
 
-    if (stats.size <= maxTextBytes && shouldReadText(relativePath)) {
+    if (entry.sizeBytes <= maxTextBytes && shouldReadText(entry.relativePath)) {
       try {
-        scanned.text = await readFile(fullPath, "utf8");
+        scanned.text = await readFile(entry.absolutePath, "utf8");
       } catch {
         // Keep path-only evidence for unreadable text files.
       }
@@ -207,6 +178,10 @@ async function walk(
 
     files.push(scanned);
   }
+
+  return files.sort((left, right) =>
+    left.relativePath.localeCompare(right.relativePath)
+  );
 }
 
 function detectArchitecturePatterns(
@@ -1020,25 +995,6 @@ async function isGitChanged(repoRoot: string, relativePath: string): Promise<boo
   }
 }
 
-async function findRepoRoot(startPath: string): Promise<string> {
-  const startStats = await stat(startPath);
-  let current = startStats.isDirectory() ? startPath : path.dirname(startPath);
-
-  while (true) {
-    if (await pathExists(path.join(current, ".git"))) {
-      return current;
-    }
-
-    const parent = path.dirname(current);
-
-    if (parent === current) {
-      return startStats.isDirectory() ? startPath : path.dirname(startPath);
-    }
-
-    current = parent;
-  }
-}
-
 async function tryStat(filePath: string): Promise<{ mtimeMs: number } | undefined> {
   try {
     return await stat(filePath);
@@ -1109,37 +1065,14 @@ function lineNumberAt(text: string, index: number): number {
   return text.slice(0, index).split(/\r?\n/).length;
 }
 
-function normalizeRelativePath(relativePath: string): string {
-  return relativePath.split(path.sep).join("/");
-}
-
 function shouldReadText(filePath: string): boolean {
   const extension = path.extname(filePath).toLowerCase();
   return (
     textExtensions.has(extension) ||
     textFileNames.has(path.basename(filePath)) ||
-    !binaryExtensions.has(extension)
+    !isBinaryPath(filePath)
   );
 }
-
-const ignoredNames = new Set([
-  ".git",
-  ".copilot-architect",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
-  ".next",
-  ".angular",
-  "target",
-  ".venv",
-  "venv",
-  "__pycache__",
-  "vendor",
-  ".idea",
-  ".vscode",
-  ".DS_Store"
-]);
 
 const textExtensions = new Set([
   ".ts",
@@ -1168,23 +1101,4 @@ const textFileNames = new Set([
   "build.gradle",
   "build.gradle.kts",
   "angular.json"
-]);
-
-const binaryExtensions = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".ico",
-  ".pdf",
-  ".zip",
-  ".gz",
-  ".tar",
-  ".jar",
-  ".class",
-  ".exe",
-  ".dll",
-  ".so",
-  ".dylib"
 ]);

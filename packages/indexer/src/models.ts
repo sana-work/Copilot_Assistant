@@ -11,6 +11,38 @@ export interface LocalIndex {
   repoRoot: string;
   documents: IndexedFile[];
   stats: IndexStats;
+  /**
+   * Corpus-level search statistics precomputed at index time so hybrid search
+   * does not have to rebuild IDF over the whole corpus on every query.
+   * Optional for backward compatibility with indexes written before this field.
+   */
+  searchStats?: SearchStats;
+}
+
+/** Token frequency map for one document field (token -> occurrence count). */
+export type TokenCounts = Record<string, number>;
+
+/** Precomputed per-field tokenizations for a single document. */
+export interface DocumentTokens {
+  path: TokenCounts;
+  symbols: TokenCounts;
+  preview: TokenCounts;
+  imports: TokenCounts;
+}
+
+/** Corpus-wide statistics required for BM25 ranking. */
+export interface SearchStats {
+  docCount: number;
+  avgDocLength: number;
+  termDocFreq: TokenCounts;
+  /**
+   * Per-field average token count (path, symbols, preview, imports). Precomputed
+   * so BM25 can normalize each field against its own average rather than using
+   * `avgDocLength / numFields`, which under-normalizes long preview fields and
+   * over-normalizes short path fields. Optional for backward compatibility with
+   * indexes written before this field was introduced.
+   */
+  avgFieldLengths?: Record<string, number>;
 }
 
 export interface IndexedFile {
@@ -28,6 +60,11 @@ export interface IndexedFile {
   isConfigFile: boolean;
   isDocFile: boolean;
   indexedAt: string;
+  /**
+   * Precomputed per-field token counts used by hybrid search. Optional for
+   * backward compatibility; search recomputes on the fly when absent.
+   */
+  searchTokens?: DocumentTokens;
 }
 
 export interface IndexStats {
@@ -86,6 +123,17 @@ export interface SearchResult {
   isTestFile: boolean;
   isConfigFile: boolean;
   isDocFile: boolean;
+  /**
+   * Best-matching symbol for the query, giving file:line precision so callers
+   * can point an agent at the relevant declaration rather than the whole file.
+   */
+  anchor?: SearchAnchor;
+}
+
+export interface SearchAnchor {
+  symbol: string;
+  kind: string;
+  line?: number;
 }
 
 export interface SearchResponse {

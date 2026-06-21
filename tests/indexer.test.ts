@@ -55,7 +55,7 @@ describe("IndexingService", () => {
     });
     const service = new IndexingService();
 
-    await service.index({ startPath: repoRoot });
+    const indexResult = await service.index({ startPath: repoRoot });
     const response = await service.search({
       startPath: repoRoot,
       query: "invoice approval"
@@ -66,6 +66,17 @@ describe("IndexingService", () => {
     expect(response.results[0]?.matchedFields).toEqual(
       expect.arrayContaining(["path", "preview", "symbols"])
     );
+    // Corpus stats are precomputed at index time, not rebuilt per query.
+    expect(indexResult.index.searchStats?.docCount).toBe(3);
+    expect(indexResult.index.searchStats?.termDocFreq.invoice).toBeGreaterThan(0);
+    // Per-field averages are stored so BM25 normalizes each field independently.
+    expect(indexResult.index.searchStats?.avgFieldLengths?.path).toBeGreaterThan(0);
+    expect(indexResult.index.searchStats?.avgFieldLengths?.preview).toBeGreaterThan(
+      indexResult.index.searchStats?.avgFieldLengths?.path ?? 0
+    );
+    // Symbol anchor gives file:line precision into the matched declaration.
+    expect(response.results[0]?.anchor?.symbol).toBe("approveInvoice");
+    expect(response.results[0]?.anchor?.line).toBeGreaterThan(0);
   });
 
   it("skips ignored folders", async () => {

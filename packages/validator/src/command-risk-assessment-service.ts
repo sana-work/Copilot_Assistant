@@ -19,15 +19,20 @@ export class CommandRiskAssessmentService {
     policy: SafetyPolicy = createDefaultSafetyPolicy()
   ): CommandRiskAssessment {
     const commandText = [command.command, ...command.args].join(" ");
-    const reasons: string[] = [];
-    const matchedRules: string[] = [];
+
+    // Hard concerns can NEVER be waived by an allowlist entry: a destructive
+    // command or one pointed outside the workspace is always blocked.
+    const hard: Concern[] = [];
+    // Soft concerns require human approval but may be waived by an explicit
+    // allowedPatterns match (e.g. a team intentionally permits a custom tool).
+    const soft: Concern[] = [];
 
     for (const pattern of policy.blockedPatterns) {
-      const rule = new RegExp(pattern, "i");
-
-      if (rule.test(commandText)) {
-        reasons.push(`Command matches blocked pattern: ${pattern}`);
-        matchedRules.push(ruleNameForPattern(pattern));
+      if (new RegExp(pattern, "i").test(commandText)) {
+        hard.push({
+          rule: ruleNameForPattern(pattern),
+          reason: `Command matches blocked pattern: ${pattern}`
+        });
       }
     }
 
@@ -35,42 +40,69 @@ export class CommandRiskAssessmentService {
       const boundary = this.pathBoundaryService.checkPath(workspaceRoot, command.cwd);
 
       if (!boundary.allowed) {
-        reasons.push(boundary.reason ?? "Command path is outside the workspace root.");
-        matchedRules.push("workspace-boundary");
+        hard.push({
+          rule: "workspace-boundary",
+          reason: boundary.reason ?? "Command path is outside the workspace root."
+        });
       }
     }
 
-    if (!isSupportedCommand(command)) {
-      reasons.push(
-        `Command executable "${command.command}" is not in the safe command set.`
-      );
-      matchedRules.push("unsupported-command");
+    const support = classifyCommandSupport(command);
+
+    if (support === "unsupported") {
+      soft.push({
+        rule: "unsupported-command",
+        reason: `Command executable "${command.command}" is not in the safe command set.`
+      });
+    } else if (support === "custom-unverified") {
+      soft.push({
+        rule: "custom-command-unverified",
+        reason: `Custom command "${commandText}" runs an executable outside the safe set; review it before running.`
+      });
     }
 
     if (isGitHistoryMutation(commandText)) {
-      reasons.push("Command modifies git history or deletes git working tree state.");
-      matchedRules.push("git-history-warning");
+      soft.push({
+        rule: "git-history-warning",
+        reason: "Command modifies git history or deletes git working tree state."
+      });
     }
+
+    // An allowlist match only waives SOFT concerns. Hard blocks and workspace
+    // boundary violations stand regardless, closing the previous foot-gun where
+    // one allowedPatterns entry could re-enable `rm -rf` or an out-of-tree path.
+    const explicitlyAllowed =
+      soft.length > 0 &&
+      policy.allowedPatterns.some((pattern) =>
+        new RegExp(pattern, "i").test(commandText)
+      );
+    const effectiveSoft = explicitlyAllowed ? [] : soft;
+    const concerns = [...hard, ...effectiveSoft];
+    const blocked = hard.length > 0;
 
     return {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       command: commandText,
-      allowed:
-        reasons.length === 0 ||
-        policy.allowedPatterns.some((pattern) =>
-          new RegExp(pattern, "i").test(commandText)
-        ),
-      riskLevel: reasons.length === 0 ? "low" : "blocked",
-      reasons,
-      matchedRules,
-      requiresHumanApproval: reasons.length > 0
+      // Runs without human approval only when nothing remains after waiving.
+      allowed: concerns.length === 0,
+      riskLevel: blocked ? "blocked" : effectiveSoft.length > 0 ? "medium" : "low",
+      reasons: concerns.map((concern) => concern.reason),
+      matchedRules: concerns.map((concern) => concern.rule),
+      requiresHumanApproval: concerns.length > 0
     };
   }
 }
 
+interface Concern {
+  rule: string;
+  reason: string;
+}
+
+type CommandSupport = "supported" | "unsupported" | "custom-unverified";
+
 function isGitHistoryMutation(commandText: string): boolean {
-  return /\bgit\s+(?:push\s+--force|rebase|reset\s+--hard|clean\s+-)/i.test(
+  return /\bgit\s+(?:push\s+(?:--force(?:-with-lease)?|-[fF]\b)|rebase|reset\s+--hard|clean\s+-)/i.test(
     commandText
   );
 }
@@ -88,43 +120,52 @@ function ruleNameForPattern(pattern: string): string {
   return pattern;
 }
 
-function isSupportedCommand(command: ValidationCommand): boolean {
+function classifyCommandSupport(command: ValidationCommand): CommandSupport {
+  // A custom command declared in commands.json is no longer blanket-trusted.
+  // Known-safe executables still pass; anything else is surfaced as
+  // "custom-unverified" so it requires human approval instead of running silently.
+  const isCustom = command.source.startsWith("commands.json");
+  const fallback: CommandSupport = isCustom ? "custom-unverified" : "unsupported";
   const executable = path.basename(command.command).toLowerCase();
 
-  if (command.source.startsWith("commands.json")) {
-    return true;
-  }
-
   if (supportedExecutables.has(executable)) {
-    return true;
+    return "supported";
   }
 
   if (executable === "python" || executable === "python3" || executable === "py") {
     if (command.args[0] === "-m") {
-      return (
-        command.args[1] === "pytest" ||
-        command.args[1] === "unittest" ||
-        command.args[1] === "mypy" ||
-        command.args[1] === "flake8" ||
-        command.args[1] === "black" ||
-        command.args[1] === "ruff" ||
-        command.args[1] === "isort" ||
-        command.args[1] === "pylint"
-      );
+      return [
+        "pytest",
+        "unittest",
+        "mypy",
+        "flake8",
+        "black",
+        "ruff",
+        "isort",
+        "pylint"
+      ].includes(command.args[1] ?? "")
+        ? "supported"
+        : fallback;
     }
     // Allow setup.py test/build but not setup.py install which may mutate the system
     if (command.args[0] === "setup.py") {
-      return command.args[1] === "test" || command.args[1] === "build";
+      return command.args[1] === "test" || command.args[1] === "build"
+        ? "supported"
+        : fallback;
     }
-    return false;
+    return fallback;
   }
 
   if (executable === "node") {
     // Allow node to run scripts only (not -e exec)
-    return command.args.length > 0 && command.args[0] !== "-e" && !command.args.includes("--eval");
+    return command.args.length > 0 &&
+      command.args[0] !== "-e" &&
+      !command.args.includes("--eval")
+      ? "supported"
+      : fallback;
   }
 
-  return false;
+  return fallback;
 }
 
 const supportedExecutables = new Set([

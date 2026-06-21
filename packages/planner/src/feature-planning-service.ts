@@ -14,6 +14,8 @@ import {
   type PlanStep,
   type RepoMap,
   type RiskItem,
+  type RouteApiEndpoint,
+  type TestRelationship,
   type UniversalRepoMap,
   type ValidationCommand,
   type WorkspaceConfig,
@@ -35,6 +37,7 @@ import type {
   FeaturePlanningOptions,
   FeaturePlanningResult,
   PlanArtifactPaths,
+  PlanEndpointReference,
   PlanFileReference,
   PlanningContextSummary,
   StackSpecificPlan
@@ -179,6 +182,12 @@ function buildPlan(
   );
   const stackSpecificPlan = createStackSpecificPlan(repo);
   const likelyFilesToModify = inferLikelyFilesToModify(searchResults);
+  const relatedEndpoints = selectRelatedEndpoints(
+    request,
+    advancedAnalysis.routes,
+    advancedAnalysis.testRelationships,
+    likelyFilesToModify
+  );
   const likelyNewFiles = inferLikelyNewFiles(repo, request, impactedModules);
   const assumptions = createAssumptions(repo, searchResults, planningContext);
   const openQuestions = createOpenQuestions(repo, request, planningContext);
@@ -204,7 +213,8 @@ function buildPlan(
       request,
       likelyFilesToModify,
       likelyNewFiles,
-      stackSpecificPlan
+      stackSpecificPlan,
+      relatedEndpoints
     ),
     impactAnalysis: {
       summary: `Likely impact spans ${impactedModules.length || 1} module/folder area(s), ${impactedLanguages.length || 0} language(s), and ${impactedFrameworks.length || 0} framework(s).`,
@@ -212,7 +222,7 @@ function buildPlan(
       affectedFiles: likelyFilesToModify,
       affectedCommands,
       risks,
-      testGaps: createTestGaps(searchResults, repo)
+      testGaps: createTestGaps(searchResults, repo, relatedEndpoints)
     },
     validationPlan: {
       schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -262,7 +272,8 @@ function buildPlan(
     advancedAnalysis,
     riskScores: advancedAnalysis.riskScores,
     planQuality,
-    readinessDiagnostics: advancedAnalysis.diagnostics
+    readinessDiagnostics: advancedAnalysis.diagnostics,
+    relatedEndpoints
   };
 }
 
@@ -296,8 +307,23 @@ function createImplementationSteps(
   request: string,
   likelyFilesToModify: string[],
   likelyNewFiles: string[],
-  stackSpecificPlan: StackSpecificPlan
+  stackSpecificPlan: StackSpecificPlan,
+  relatedEndpoints: PlanEndpointReference[]
 ): PlanStep[] {
+  const endpointDetails =
+    relatedEndpoints.length > 0
+      ? `Touch the related endpoint(s) ${relatedEndpoints
+          .map((endpoint) => formatEndpoint(endpoint))
+          .join("; ")}.`
+      : flattenStackSpecificPlan(stackSpecificPlan).join(" ");
+  const endpointFiles = unique([
+    ...likelyNewFiles,
+    ...relatedEndpoints.map((endpoint) => endpoint.filePath)
+  ]);
+  const endpointTestFiles = relatedEndpoints
+    .map((endpoint) => endpoint.testFile)
+    .filter((testFile): testFile is string => Boolean(testFile));
+
   return [
     {
       id: "step-1",
@@ -317,16 +343,21 @@ function createImplementationSteps(
     {
       id: "step-3",
       title: "Add or update stack-specific integration points",
-      details: flattenStackSpecificPlan(stackSpecificPlan).join(" "),
-      files: likelyNewFiles,
+      details: endpointDetails,
+      files: endpointFiles,
       dependsOn: ["step-2"]
     },
     {
       id: "step-4",
       title: "Add focused tests and validation evidence",
       details:
-        "Add tests around the new workflow and run the detected validation commands.",
-      files: likelyFilesToModify.filter(isLikelyTestFile),
+        endpointTestFiles.length > 0
+          ? `Add tests around the new workflow and extend existing endpoint tests (${endpointTestFiles.join(", ")}); then run the detected validation commands.`
+          : "Add tests around the new workflow and run the detected validation commands.",
+      files: unique([
+        ...likelyFilesToModify.filter(isLikelyTestFile),
+        ...endpointTestFiles
+      ]),
       dependsOn: ["step-2", "step-3"]
     },
     {
@@ -652,7 +683,11 @@ function createPlanQualityScore(input: {
   };
 }
 
-function createTestGaps(searchResults: SearchResult[], repo: RepoMap): string[] {
+function createTestGaps(
+  searchResults: SearchResult[],
+  repo: RepoMap,
+  relatedEndpoints: PlanEndpointReference[]
+): string[] {
   const gaps: string[] = [];
 
   if (!searchResults.some((result) => result.isTestFile)) {
@@ -663,7 +698,75 @@ function createTestGaps(searchResults: SearchResult[], repo: RepoMap): string[] 
     gaps.push("No test command was detected.");
   }
 
+  for (const endpoint of relatedEndpoints) {
+    if (!endpoint.testFile) {
+      gaps.push(
+        `Endpoint ${endpoint.method} ${endpoint.routePath} (${endpoint.filePath}) has no nearby test.`
+      );
+    }
+  }
+
   return gaps;
+}
+
+// Pick the API endpoints most relevant to the request: those whose file is
+// already a likely modification target, or whose route/handler shares words
+// with the request. Each is paired with its nearest test (if one exists).
+function selectRelatedEndpoints(
+  request: string,
+  routes: RouteApiEndpoint[],
+  testRelationships: TestRelationship[],
+  likelyFilesToModify: string[]
+): PlanEndpointReference[] {
+  const requestTerms = new Set(requestWords(request));
+  const modifyFiles = new Set(likelyFilesToModify);
+  const testByRoute = new Map<string, string>();
+  const testByFile = new Map<string, string>();
+
+  for (const relationship of testRelationships) {
+    if (!relationship.testFile) {
+      continue;
+    }
+    if (relationship.routePath) {
+      testByRoute.set(relationship.routePath, relationship.testFile);
+    }
+    testByFile.set(relationship.sourceFile, relationship.testFile);
+  }
+
+  return routes
+    .map((route) => {
+      const routeTerms = requestWords(`${route.routePath} ${route.handler ?? ""}`);
+      const overlap = routeTerms.filter((term) => requestTerms.has(term)).length;
+      const score = overlap + (modifyFiles.has(route.filePath) ? 1 : 0);
+      return { route, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 6)
+    .map(({ route }) => ({
+      method: route.method,
+      routePath: route.routePath,
+      filePath: route.filePath,
+      line: route.line,
+      testFile: testByRoute.get(route.routePath) ?? testByFile.get(route.filePath)
+    }));
+}
+
+function formatEndpoint(endpoint: PlanEndpointReference): string {
+  const location = endpoint.line
+    ? `${endpoint.filePath}:${endpoint.line}`
+    : endpoint.filePath;
+  const test = endpoint.testFile
+    ? ` covered by \`${endpoint.testFile}\``
+    : " (no test yet)";
+  return `${endpoint.method} ${endpoint.routePath} (\`${location}\`)${test}`;
+}
+
+function requestWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length > 2);
 }
 
 function inferLikelyFilesToModify(searchResults: SearchResult[]): string[] {

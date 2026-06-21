@@ -194,6 +194,39 @@ describe("FeaturePlanningService", () => {
     expect(result.plan.likelyNewFiles.length).toBeGreaterThan(0);
   });
 
+  it("cites matching API endpoints with file location and their tests", async () => {
+    const repoRoot = await createRepo({
+      "package.json": JSON.stringify({
+        scripts: { test: "vitest run" },
+        dependencies: { express: "^4.18.0" }
+      }),
+      "src/routes/invoices.ts":
+        "import { Router } from 'express';\nconst router = Router();\nrouter.post('/invoices/approve', approveInvoice);\nexport function approveInvoice() { return 'approved'; }\n",
+      "src/routes/invoices.test.ts": "test('approve invoice route', () => {})"
+    });
+
+    const result = await new FeaturePlanningService().createPlan({
+      startPath: repoRoot,
+      request: "Add invoice approve workflow"
+    });
+
+    const endpoint = result.plan.relatedEndpoints.find((candidate) =>
+      candidate.routePath.includes("/invoices/approve")
+    );
+
+    expect(endpoint).toBeDefined();
+    expect(endpoint?.filePath).toBe("src/routes/invoices.ts");
+    expect(endpoint?.line).toBeGreaterThan(0);
+    expect(endpoint?.testFile).toBe("src/routes/invoices.test.ts");
+
+    const integrationStep = result.plan.implementationSteps.find(
+      (step) => step.id === "step-3"
+    );
+    expect(integrationStep?.details).toContain("/invoices/approve");
+    expect(integrationStep?.files).toContain("src/routes/invoices.ts");
+    expect(result.markdown).toContain("## Endpoints To Touch");
+  });
+
   it("supports CLI plan and --json output", async () => {
     const repoRoot = await createRepo({
       "package.json": JSON.stringify({

@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -10,14 +11,25 @@ import {
   createCliCommandLine,
   createDashboardHtml,
   deactivate,
+  loadDashboardArtifacts,
   type CliRunRequest,
   type CliRunResult,
   type DisposableLike,
   type ExtensionContextLike,
   type McpStarter,
+  type UriLike,
   type VscodeApiLike,
   type WebviewViewProviderLike
 } from "../packages/vscode-extension/src/index.js";
+
+const passThroughRunner = {
+  run: async (request: CliRunRequest): Promise<CliRunResult> => ({
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    commandLine: createCliCommandLine(request.args)
+  })
+};
 
 describe("VS Code extension shell", () => {
   it("declares activity bar, webview, and workflow commands in the manifest", async () => {
@@ -110,6 +122,201 @@ describe("VS Code extension shell", () => {
     deactivate();
   });
 
+  it("registers sub-repos with positional name+path and surfaces them in the Explorer", async () => {
+    const reposDir = await mkdtemp(path.join(tmpdir(), "copilot-ext-scan-"));
+    const repoA = path.join(reposDir, "service-a");
+    const repoB = path.join(reposDir, "service-b");
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    await mkdir(path.join(reposDir, ".hidden"), { recursive: true });
+
+    const fake = createFakeVscode();
+    fake.openDialogResult = [{ fsPath: reposDir, toString: () => reposDir }];
+    const cliRequests: CliRunRequest[] = [];
+    const runner = {
+      run: async (request: CliRunRequest): Promise<CliRunResult> => {
+        cliRequests.push(request);
+        return {
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          commandLine: createCliCommandLine(request.args)
+        };
+      }
+    };
+    const context: ExtensionContextLike = {
+      subscriptions: [],
+      extensionPath: "/workspace/ext-root/packages/vscode-extension"
+    };
+
+    activate(context, fake.vscode, { runner });
+    await fake.commands.get("copilotArchitect.workspaceScan")?.();
+
+    const addArgs = cliRequests
+      .filter((request) => request.args[0] === "workspace" && request.args[1] === "add")
+      .map((request) => request.args);
+    // Repo name + path are positional; the CLI's --name sets the workspace name.
+    expect(addArgs).toContainEqual([
+      "workspace",
+      "add",
+      "service-a",
+      repoA,
+      "--path",
+      "/workspace/repo"
+    ]);
+    expect(addArgs).toContainEqual([
+      "workspace",
+      "add",
+      "service-b",
+      repoB,
+      "--path",
+      "/workspace/repo"
+    ]);
+    expect(addArgs.every((args) => !args.includes("--name"))).toBe(true);
+
+    // Every registered repo is analyzed; the hidden directory is skipped.
+    const analyzedPaths = cliRequests
+      .filter((request) => request.args[0] === "analyze")
+      .map((request) => request.args[2]);
+    expect(analyzedPaths).toEqual(expect.arrayContaining([repoA, repoB]));
+    expect(analyzedPaths).not.toContain(path.join(reposDir, ".hidden"));
+
+    // Registered repos are added to the workspace so they show in the Explorer.
+    expect(fake.addedFolders.map((folder) => folder.uri.fsPath)).toEqual(
+      expect.arrayContaining([repoA, repoB])
+    );
+
+    deactivate();
+  });
+
+  it("opens the selected repo in the same window so the extension stays active", async () => {
+    const fake = createFakeVscode();
+    fake.openDialogResult = [
+      { fsPath: "/some/other/repo", toString: () => "/some/other/repo" }
+    ];
+    const context: ExtensionContextLike = {
+      subscriptions: [],
+      extensionPath: "/workspace/ext-root/packages/vscode-extension"
+    };
+
+    activate(context, fake.vscode, { runner: passThroughRunner });
+    await fake.commands.get("copilotArchitect.openRepoInNewWindow")?.();
+
+    const openCall = fake.executeCommandCalls.find(
+      (call) => call.command === "vscode.openFolder"
+    );
+    expect(openCall).toBeDefined();
+    expect(openCall?.args[0]).toMatchObject({ fsPath: "/some/other/repo" });
+    expect(openCall?.args[1]).toEqual({ forceNewWindow: false });
+
+    deactivate();
+  });
+
+  it("loads live dashboard values from .copilot-architect artifacts", async () => {
+    const repoRoot = await mkdtemp(path.join(tmpdir(), "copilot-ext-dash-"));
+    const ca = path.join(repoRoot, ".copilot-architect");
+    await mkdir(path.join(ca, "plans"), { recursive: true });
+    await mkdir(path.join(ca, "runs"), { recursive: true });
+    await mkdir(path.join(ca, "reviews"), { recursive: true });
+    await mkdir(path.join(repoRoot, ".github", "agents"), { recursive: true });
+
+    await writeFile(
+      path.join(ca, "repo-map.json"),
+      JSON.stringify({
+        summary: { primaryLanguages: ["TypeScript"], primaryFrameworks: ["React"] }
+      }),
+      "utf8"
+    );
+    await writeFile(
+      path.join(ca, "plans", "latest-plan.json"),
+      JSON.stringify({
+        title: "Add invoice approval",
+        status: "draft",
+        generatedAt: "2026-06-21T10:00:00.000Z"
+      }),
+      "utf8"
+    );
+    await writeFile(
+      path.join(ca, "runs", "latest-validation.json"),
+      JSON.stringify({
+        status: "passed",
+        generatedAt: "2026-06-21T11:00:00.000Z",
+        results: [{ status: "passed" }, { status: "failed" }]
+      }),
+      "utf8"
+    );
+    await writeFile(
+      path.join(ca, "reviews", "latest-review.json"),
+      JSON.stringify({ summary: "Looks good", findings: [{}, {}, {}] }),
+      "utf8"
+    );
+    await writeFile(
+      path.join(repoRoot, ".github", "agents", "FeatureArchitect.agent.md"),
+      "# agent",
+      "utf8"
+    );
+    await writeFile(
+      path.join(ca, "workspace.json"),
+      JSON.stringify({ repos: [{ name: "a" }, { name: "b" }] }),
+      "utf8"
+    );
+
+    const artifacts = await loadDashboardArtifacts(repoRoot);
+
+    expect(artifacts.languages).toEqual(["TypeScript"]);
+    expect(artifacts.frameworks).toEqual(["React"]);
+    expect(artifacts.latestPlan?.title).toBe("Add invoice approval");
+    expect(artifacts.latestValidation).toMatchObject({
+      status: "passed",
+      passed: 1,
+      total: 2
+    });
+    expect(artifacts.latestReview?.findingCount).toBe(3);
+    expect(artifacts.agentCount).toBe(1);
+    expect(artifacts.repoCount).toBe(2);
+  });
+
+  it("returns empty artifacts when none are on disk", async () => {
+    const artifacts = await loadDashboardArtifacts(
+      path.join(tmpdir(), `copilot-missing-${Date.now()}`)
+    );
+    expect(artifacts.languages).toBeUndefined();
+    expect(artifacts.latestPlan).toBeUndefined();
+    expect(artifacts.agentCount).toBe(0);
+  });
+
+  it("renders live artifact values into the dashboard cards", () => {
+    const html = createDashboardHtml({
+      workspaceRoot: "/workspace/repo",
+      mcpStatus: "running",
+      artifacts: {
+        languages: ["TypeScript", "Python"],
+        frameworks: ["React"],
+        latestPlan: {
+          title: "Add invoice approval",
+          status: "draft",
+          generatedAt: "2026-06-21T10:00:00.000Z"
+        },
+        latestValidation: {
+          status: "passed",
+          passed: 3,
+          total: 4,
+          generatedAt: "2026-06-21T11:00:00.000Z"
+        },
+        latestReview: { summary: "All clear", findingCount: 2 },
+        agentCount: 7,
+        repoCount: 2
+      }
+    });
+
+    expect(html).toContain("TypeScript, Python");
+    expect(html).toContain("React");
+    expect(html).toContain("Add invoice approval");
+    expect(html).toContain("3/4 passed");
+    expect(html).toContain("7 agent(s) installed");
+    expect(html).toContain("2 registered repo(s)");
+  });
+
   it("renders the required dashboard sections without reading business artifacts", () => {
     const html = createDashboardHtml({
       workspaceRoot: "/workspace/repo",
@@ -131,27 +338,34 @@ describe("VS Code extension shell", () => {
   });
 });
 
-function createFakeVscode(): {
+interface FakeVscode {
   vscode: VscodeApiLike;
   commands: Map<string, () => Promise<unknown> | unknown>;
   input: string | undefined;
   viewProviderId: string | undefined;
-} {
+  openDialogResult: UriLike[] | undefined;
+  executeCommandCalls: Array<{ command: string; args: unknown[] }>;
+  addedFolders: Array<{ uri: UriLike; name?: string }>;
+}
+
+function createFakeVscode(): FakeVscode {
   const commands = new Map<string, () => Promise<unknown> | unknown>();
-  const fake: {
-    vscode: VscodeApiLike;
-    commands: Map<string, () => Promise<unknown> | unknown>;
-    input: string | undefined;
-    viewProviderId: string | undefined;
-  } = {
+  const fake: FakeVscode = {
     commands,
     input: undefined,
     viewProviderId: undefined,
+    openDialogResult: undefined,
+    executeCommandCalls: [],
+    addedFolders: [],
     vscode: {
       commands: {
         registerCommand: (command, callback): DisposableLike => {
           commands.set(command, callback);
           return { dispose: () => commands.delete(command) };
+        },
+        executeCommand: async (command, ...args) => {
+          fake.executeCommandCalls.push({ command, args });
+          return undefined;
         }
       },
       window: {
@@ -163,6 +377,7 @@ function createFakeVscode(): {
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         showInputBox: async () => fake.input,
+        showOpenDialog: async () => fake.openDialogResult,
         registerWebviewViewProvider: (
           viewId: string,
           provider: WebviewViewProviderLike
@@ -192,7 +407,14 @@ function createFakeVscode(): {
             name: "repo",
             index: 0
           }
-        ]
+        ],
+        updateWorkspaceFolders: (_start, _deleteCount, ...folders) => {
+          fake.addedFolders.push(...folders);
+          return true;
+        }
+      },
+      Uri: {
+        file: (fsPath: string) => ({ fsPath, toString: () => fsPath })
       },
       ViewColumn: {
         One: 1

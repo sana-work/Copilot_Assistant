@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -16,7 +16,10 @@ import {
   type RepoMap,
   type UniversalRepoMap,
   ensureArtifactDirectories,
+  findRepoRoot,
   getArtifactFilePath,
+  isBinaryPath,
+  scanRepository,
   writeJsonFile
 } from "@copilot-architect/shared";
 
@@ -90,75 +93,23 @@ async function normalizeRepoRoot(startPath: string): Promise<string> {
   return startStats.isDirectory() ? startPath : path.dirname(startPath);
 }
 
-async function findRepoRoot(startPath: string): Promise<string> {
-  const startStats = await stat(startPath);
-  let current = startStats.isDirectory() ? startPath : path.dirname(startPath);
-
-  while (true) {
-    if (await pathExists(path.join(current, ".git"))) {
-      return current;
-    }
-
-    const parent = path.dirname(current);
-
-    if (parent === current) {
-      return startStats.isDirectory() ? startPath : path.dirname(startPath);
-    }
-
-    current = parent;
-  }
-}
-
 async function scanRepoFiles(
   repoRoot: string,
   maxFileBytes = 256_000
 ): Promise<AdapterFile[]> {
+  const entries = await scanRepository(repoRoot);
   const files: AdapterFile[] = [];
 
-  await walkDirectory(repoRoot, repoRoot, files, maxFileBytes);
-
-  return files.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-async function walkDirectory(
-  repoRoot: string,
-  directory: string,
-  files: AdapterFile[],
-  maxFileBytes: number
-): Promise<void> {
-  const entries = await readdir(directory, { withFileTypes: true });
-
   for (const entry of entries) {
-    if (ignoredNames.has(entry.name)) {
-      continue;
-    }
-
-    const fullPath = path.join(directory, entry.name);
-
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      await walkDirectory(repoRoot, fullPath, files, maxFileBytes);
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    const fileStats = await stat(fullPath);
-    const relativePath = normalizeRelativePath(path.relative(repoRoot, fullPath));
     const adapterFile: AdapterFile = {
-      path: relativePath,
-      extension: path.extname(entry.name),
-      sizeBytes: fileStats.size
+      path: entry.relativePath,
+      extension: entry.extension,
+      sizeBytes: entry.sizeBytes
     };
 
-    if (fileStats.size <= maxFileBytes && shouldReadText(relativePath)) {
+    if (entry.sizeBytes <= maxFileBytes && shouldReadText(entry.relativePath)) {
       try {
-        adapterFile.text = await readFile(fullPath, "utf8");
+        adapterFile.text = await readFile(entry.absolutePath, "utf8");
       } catch {
         // Binary or invalid UTF-8 files are still useful by path.
       }
@@ -166,6 +117,8 @@ async function walkDirectory(
 
     files.push(adapterFile);
   }
+
+  return files.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function buildUniversalRepoMap(
@@ -444,26 +397,6 @@ type DiscoveryDetection = Pick<
   | "diagnostics"
 >;
 
-const ignoredNames = new Set([
-  ".git",
-  ".copilot-architect",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
-  ".next",
-  ".angular",
-  "target",
-  ".venv",
-  "venv",
-  "__pycache__",
-  ".pytest_cache",
-  "vendor",
-  ".idea",
-  ".vscode",
-  ".DS_Store"
-]);
-
 const textExtensions = new Set([
   ".ts",
   ".tsx",
@@ -508,40 +441,8 @@ function shouldReadText(filePath: string): boolean {
   return (
     textExtensions.has(extension) ||
     textFileNames.has(path.basename(filePath)) ||
-    !binaryExtensions.has(extension)
+    !isBinaryPath(filePath)
   );
-}
-
-const binaryExtensions = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".ico",
-  ".pdf",
-  ".zip",
-  ".gz",
-  ".tar",
-  ".jar",
-  ".class",
-  ".exe",
-  ".dll",
-  ".so",
-  ".dylib"
-]);
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await stat(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function normalizeRelativePath(relativePath: string): string {
-  return relativePath.split(path.sep).join("/");
 }
 
 function isDocumentationFile(filePath: string): boolean {

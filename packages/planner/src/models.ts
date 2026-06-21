@@ -60,7 +60,16 @@ export interface FeaturePlanArtifact extends FeaturePlan {
   riskScores: AdvancedRiskScore[];
   planQuality: PlanQualityScore;
   readinessDiagnostics: RepoReadinessDiagnostic[];
+  relatedEndpoints: PlanEndpointReference[];
   multiRepo?: WorkspacePlanSummary;
+}
+
+export interface PlanEndpointReference {
+  method: string;
+  routePath: string;
+  filePath: string;
+  line?: number;
+  testFile?: string;
 }
 
 export interface PlanFileReference {

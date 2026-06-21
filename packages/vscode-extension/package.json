@@ -85,7 +85,7 @@
       },
       {
         "command": "copilotArchitect.openRepoInNewWindow",
-        "title": "Copilot Architect: Open Repo in New Window",
+        "title": "Copilot Architect: Open Repo",
         "icon": "$(folder-opened)"
       },
       {

@@ -194,6 +194,14 @@ export interface VscodeApiLike {
   };
   workspace: {
     workspaceFolders?: WorkspaceFolderLike[];
+    updateWorkspaceFolders?(
+      start: number,
+      deleteCount: number,
+      ...workspaceFoldersToAdd: { uri: UriLike; name?: string }[]
+    ): boolean;
+  };
+  Uri?: {
+    file(path: string): UriLike;
   };
   ViewColumn?: {
     One: number;
@@ -202,7 +210,10 @@ export interface VscodeApiLike {
     createChatParticipant(id: string, handler: ChatRequestHandlerLike): DisposableLike;
   };
   lm?: {
-    selectChatModels(selector?: { vendor?: string; family?: string }): Promise<LanguageModelLike[]>;
+    selectChatModels(selector?: {
+      vendor?: string;
+      family?: string;
+    }): Promise<LanguageModelLike[]>;
   };
   LanguageModelChatMessage?: {
     User(content: string): LanguageModelChatMessageLike;
@@ -243,6 +254,23 @@ export interface ExtensionState {
   lastExitCode?: number;
   lastStdout?: string;
   lastStderr?: string;
+  artifacts?: DashboardArtifacts;
+}
+
+/** Live values read from `.copilot-architect/` artifacts to populate the dashboard. */
+export interface DashboardArtifacts {
+  languages?: string[];
+  frameworks?: string[];
+  latestPlan?: { title: string; status?: string; generatedAt?: string };
+  latestValidation?: {
+    status?: string;
+    generatedAt?: string;
+    passed?: number;
+    total?: number;
+  };
+  latestReview?: { summary?: string; generatedAt?: string; findingCount?: number };
+  agentCount?: number;
+  repoCount?: number;
 }
 
 export interface ActivatedExtensionApi {
@@ -316,7 +344,9 @@ export function activate(
     if (command.id === "copilotArchitect.analyzeRepo") {
       const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
       if (repoRoots.length > 0) {
-        outputChannel.appendLine(`[workspace mode] analyzing ${repoRoots.length} registered repo(s)…`);
+        outputChannel.appendLine(
+          `[workspace mode] analyzing ${repoRoots.length} registered repo(s)…`
+        );
         let passed = 0;
         for (const repoRoot of repoRoots) {
           const repoArgs = ["analyze", "--path", repoRoot];
@@ -390,7 +420,9 @@ export function activate(
     if (command.id === "copilotArchitect.validate") {
       const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
       if (repoRoots.length > 0) {
-        outputChannel.appendLine(`[workspace mode] validating ${repoRoots.length} repo(s)…`);
+        outputChannel.appendLine(
+          `[workspace mode] validating ${repoRoots.length} repo(s)…`
+        );
         let passed = 0;
         for (const repoRoot of repoRoots) {
           const repoArgs = ["validate", "--path", repoRoot];
@@ -421,10 +453,20 @@ export function activate(
     if (command.id === "copilotArchitect.review") {
       const repoRoots = await getRegisteredRepoRoots(workspaceRoot);
       if (repoRoots.length > 0) {
-        outputChannel.appendLine(`[workspace mode] reviewing ${repoRoots.length} repo(s)…`);
+        outputChannel.appendLine(
+          `[workspace mode] reviewing ${repoRoots.length} repo(s)…`
+        );
         let passed = 0;
         for (const repoRoot of repoRoots) {
-          const repoArgs = ["review", "--plan", "latest", "--validation", "latest", "--path", repoRoot];
+          const repoArgs = [
+            "review",
+            "--plan",
+            "latest",
+            "--validation",
+            "latest",
+            "--path",
+            repoRoot
+          ];
           outputChannel.appendLine(`$ ${createCliCommandLine(repoArgs)}`);
           const r = await runner.run({
             args: repoArgs,
@@ -482,18 +524,26 @@ export function activate(
     vscode.commands.registerCommand("copilotArchitect.refreshDashboard", () =>
       dashboard.refresh()
     ),
-    vscode.commands.registerCommand("copilotArchitect.openRepoInNewWindow", async () => {
-      const uris = await vscode.window.showOpenDialog?.({
-        canSelectFolders: true,
-        canSelectFiles: false,
-        openLabel: "Open Repo",
-        title: "Select a repository folder to open in a new window"
-      });
-      if (!uris || uris.length === 0) return;
-      await vscode.commands.executeCommand?.("vscode.openFolder", uris[0], {
-        forceNewWindow: true
-      });
-    }),
+    vscode.commands.registerCommand(
+      "copilotArchitect.openRepoInNewWindow",
+      async () => {
+        const uris = await vscode.window.showOpenDialog?.({
+          canSelectFolders: true,
+          canSelectFiles: false,
+          openLabel: "Open Repo",
+          title: "Select a repository folder to open"
+        });
+        if (!uris || uris.length === 0) return;
+        // Open in the SAME window so the already-running extension re-activates
+        // against the selected repo. Forcing a new window can launch a plain
+        // window where this extension is not loaded (notably for dev/unpacked
+        // installs), which is why the repo previously opened without Copilot
+        // Architect features.
+        await vscode.commands.executeCommand?.("vscode.openFolder", uris[0], {
+          forceNewWindow: false
+        });
+      }
+    ),
     vscode.commands.registerCommand("copilotArchitect.setupMcp", async () => {
       outputChannel.appendLine("$ npm run cli -- mcp config --path " + workspaceRoot);
       outputChannel.show(true);
@@ -503,7 +553,12 @@ export function activate(
         onOutput: (_s, t) => outputChannel.appendLine(t)
       });
       if (result.exitCode === 0) {
-        const action = await (vscode.window.showInformationMessage as (msg: string, ...items: string[]) => Promise<string | undefined>)(
+        const action = await (
+          vscode.window.showInformationMessage as (
+            msg: string,
+            ...items: string[]
+          ) => Promise<string | undefined>
+        )(
           "MCP server configured. Reload the window to activate Copilot Architect tools.",
           "Reload Window"
         );
@@ -511,7 +566,9 @@ export function activate(
           await vscode.commands.executeCommand?.("workbench.action.reloadWindow");
         }
       } else {
-        vscode.window.showErrorMessage("MCP config failed. Check the Output channel for details.");
+        vscode.window.showErrorMessage(
+          "MCP config failed. Check the Output channel for details."
+        );
       }
     }),
     vscode.commands.registerCommand("copilotArchitect.workspaceScan", async () => {
@@ -539,46 +596,65 @@ export function activate(
       }
 
       if (subDirs.length === 0) {
-        vscode.window.showInformationMessage("No sub-directories found in the selected folder.");
+        vscode.window.showInformationMessage(
+          "No sub-directories found in the selected folder."
+        );
         return;
       }
 
-      outputChannel.appendLine(`[workspace scan] ${subDirs.length} repo(s) found in ${reposDir}`);
+      outputChannel.appendLine(
+        `[workspace scan] ${subDirs.length} repo(s) found in ${reposDir}`
+      );
       outputChannel.show(true);
 
-      // 1. Initialize workspace at the workspace root
-      await runner.run({
-        args: ["workspace", "init", "--path", workspaceRoot],
-        cwd: extensionRoot,
-        onOutput: (_s, t) => outputChannel.appendLine(t)
-      });
+      // 1. Initialize workspace at the workspace root — skip if workspace.json already
+      // exists so that previously registered repos are not lost on a re-scan.
+      const existingWorkspace = await readJsonSafe<unknown>(
+        path.join(workspaceRoot, ".copilot-architect", "workspace.json")
+      );
+      if (!existingWorkspace) {
+        await runner.run({
+          args: ["workspace", "init", "--path", workspaceRoot],
+          cwd: extensionRoot,
+          onOutput: (_s, t) => outputChannel.appendLine(t)
+        });
+      }
 
-      // 2. Register each sub-directory as a named repo
-      let registered = 0;
+      // 2. Register each sub-directory as a named repo. The CLI takes the repo
+      // name and path as positional arguments — passing the name via --name
+      // would set the *workspace* name instead and leave the repo unnamed.
+      const registeredDirs: string[] = [];
       for (const subDir of subDirs) {
         const repoName = path.basename(subDir);
         const result = await runner.run({
-          args: ["workspace", "add", "--path", workspaceRoot, "--repo", subDir, "--name", repoName],
+          args: ["workspace", "add", repoName, subDir, "--path", workspaceRoot],
           cwd: extensionRoot,
           onOutput: (_s, t) => outputChannel.appendLine(t)
         });
         if (result.exitCode === 0) {
-          registered++;
+          registeredDirs.push(subDir);
           outputChannel.appendLine(`✓ registered: ${repoName}`);
         } else {
           outputChannel.appendLine(`✗ failed:     ${repoName}`);
         }
       }
 
-      if (registered === 0) {
-        vscode.window.showErrorMessage("No repos could be registered. Check the Output channel for details.");
+      if (registeredDirs.length === 0) {
+        vscode.window.showErrorMessage(
+          "No repos could be registered. Check the Output channel for details."
+        );
         return;
       }
 
-      // 3. Analyze each registered repo so repo-map.json is created in every sub-repo folder
-      outputChannel.appendLine(`\n[workspace scan] analyzing ${registered} repo(s)…`);
-      vscode.window.showInformationMessage(`Registered ${registered} repos — analyzing each one, please wait…`);
-      for (const subDir of subDirs.slice(0, registered)) {
+      // 3. Analyze each repo that was actually registered (not the first N by
+      // count) so repo-map.json is created in every registered sub-repo folder.
+      outputChannel.appendLine(
+        `\n[workspace scan] analyzing ${registeredDirs.length} repo(s)…`
+      );
+      vscode.window.showInformationMessage(
+        `Registered ${registeredDirs.length} repos — analyzing each one, please wait…`
+      );
+      for (const subDir of registeredDirs) {
         const repoName = path.basename(subDir);
         outputChannel.appendLine(`  → analyze: ${repoName}`);
         await runner.run({
@@ -596,17 +672,29 @@ export function activate(
         onOutput: (_s, t) => outputChannel.appendLine(t)
       });
 
-      state.lastCommand = `workspace scan + index (${registered} repos)`;
+      // 5. Surface the registered repos in the Explorer by adding them as
+      // workspace folders — otherwise the scan only updates workspace.json and
+      // the file tree keeps showing the original repo.
+      const added = addWorkspaceFolders(vscode, registeredDirs);
+
+      state.lastCommand = `workspace scan + index (${registeredDirs.length} repos)`;
       state.lastExitCode = 0;
       dashboard.refresh();
       vscode.window.showInformationMessage(
-        `Done! ${registered} repos analyzed and indexed. Use @architect /search or /plan to work across all repos.`
+        `Done! ${registeredDirs.length} repos analyzed and indexed${
+          added > 0 ? ` and added to the Explorer` : ""
+        }. Use @architect /search or /plan to work across all repos.`
       );
     })
   );
 
   if (vscode.chat) {
-    const chatHandler: ChatRequestHandlerLike = async (request, _context, stream, token) => {
+    const chatHandler: ChatRequestHandlerLike = async (
+      request,
+      _context,
+      stream,
+      token
+    ) => {
       if (request.command === "help" || (!request.command && !request.prompt.trim())) {
         stream.markdown(getChatHelpText());
         return;
@@ -650,14 +738,22 @@ export function activate(
       if (artifactPath) {
         try {
           content = await readFile(artifactPath, "utf8");
-        } catch { /* no artifact yet — use stdout */ }
+        } catch {
+          /* no artifact yet — use stdout */
+        }
       }
 
       // Try LM for every command
       if (vscode.lm) {
         stream.progress?.("Getting AI-powered insights…");
-        const repoCtx = cliCommand === "plan" ? await buildRepoContext(workspaceRoot) : "";
-        const lmPrompt = buildCommandLmPrompt(cliCommand, request.prompt.trim(), content, repoCtx);
+        const repoCtx =
+          cliCommand === "plan" ? await buildRepoContext(workspaceRoot) : "";
+        const lmPrompt = buildCommandLmPrompt(
+          cliCommand,
+          request.prompt.trim(),
+          content,
+          repoCtx
+        );
         if (lmPrompt) {
           const streamed = await streamLmResponse(vscode, lmPrompt, stream, token);
           if (streamed) {
@@ -674,7 +770,8 @@ export function activate(
 
       // Fallback: show clean formatted output
       if (artifactPath) {
-        const fallback = cliCommand === "plan" ? extractPlanSummary(content) : content.slice(0, 10000);
+        const fallback =
+          cliCommand === "plan" ? extractPlanSummary(content) : content.slice(0, 10000);
         stream.markdown(fallback);
       } else {
         stream.markdown(formatCliOutputAsMarkdown(content));
@@ -683,7 +780,9 @@ export function activate(
       if (hint) stream.markdown(hint);
     };
 
-    context.subscriptions.push(vscode.chat.createChatParticipant(CHAT_PARTICIPANT_ID, chatHandler));
+    context.subscriptions.push(
+      vscode.chat.createChatParticipant(CHAT_PARTICIPANT_ID, chatHandler)
+    );
   }
 
   dashboard.refresh();
@@ -825,6 +924,22 @@ class DashboardController implements WebviewViewProviderLike {
   }
 
   refresh(): void {
+    // Render immediately with whatever is known, then reload artifacts from disk
+    // and re-render so the cards reflect the latest analyze/plan/validate output.
+    this.render();
+    void this.reloadArtifacts();
+  }
+
+  private async reloadArtifacts(): Promise<void> {
+    try {
+      this.state.artifacts = await loadDashboardArtifacts(this.state.workspaceRoot);
+    } catch {
+      // Keep the previously loaded artifacts on any read failure.
+    }
+    this.render();
+  }
+
+  private render(): void {
     const html = createDashboardHtml(this.state);
 
     if (this.view) {
@@ -847,30 +962,35 @@ class DashboardController implements WebviewViewProviderLike {
 }
 
 export function createDashboardHtml(state: ExtensionState): string {
+  const artifacts = state.artifacts;
   const sections = [
     {
       title: "Repo summary",
-      body: escapeHtml(state.workspaceRoot)
+      body: escapeHtml(
+        artifacts?.repoCount
+          ? `${state.workspaceRoot} · ${artifacts.repoCount} registered repo(s)`
+          : state.workspaceRoot
+      )
     },
     {
       title: "Languages/frameworks",
-      body: "From repo analysis artifacts"
+      body: escapeHtml(formatLanguagesFrameworks(artifacts))
     },
     {
       title: "Plans",
-      body: ".copilot-architect/plans/latest-plan.json"
+      body: escapeHtml(formatPlan(artifacts))
     },
     {
       title: "Validation runs",
-      body: ".copilot-architect/runs/latest-validation.json"
+      body: escapeHtml(formatValidation(artifacts))
     },
     {
       title: "Review reports",
-      body: ".copilot-architect/reviews/latest-review.json"
+      body: escapeHtml(formatReview(artifacts))
     },
     {
       title: "Agent status",
-      body: ".github/agents"
+      body: escapeHtml(formatAgents(artifacts))
     },
     {
       title: "MCP status",
@@ -899,7 +1019,7 @@ export function createDashboardHtml(state: ExtensionState): string {
     "</head>",
     "<body>",
     "<h1>Copilot Architect</h1>",
-    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo in New Window</a> <a href="command:copilotArchitect.workspaceScan">Scan &amp; Register Sub-repos</a> <a href="command:copilotArchitect.setupMcp">Setup MCP Server</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
+    `<div class="actions"><a href="command:copilotArchitect.openRepoInNewWindow">Open Repo</a> <a href="command:copilotArchitect.workspaceScan">Scan &amp; Register Sub-repos</a> <a href="command:copilotArchitect.setupMcp">Setup MCP Server</a>${COPILOT_ARCHITECT_COMMANDS.map(renderCommandLink).join("")}</div>`,
     '<div class="grid">',
     ...sections.map(
       (section) => `<section><h2>${section.title}</h2><p>${section.body}</p></section>`
@@ -919,6 +1039,158 @@ export function createDashboardHtml(state: ExtensionState): string {
 
 export function createCliCommandLine(args: string[]): string {
   return ["npm", "run", "cli", "--", ...args.map(quoteCliArg)].join(" ");
+}
+
+// --- Dashboard artifact loading + formatting ---
+
+export async function loadDashboardArtifacts(
+  workspaceRoot: string
+): Promise<DashboardArtifacts> {
+  const root = path.join(workspaceRoot, ".copilot-architect");
+  const artifacts: DashboardArtifacts = {};
+
+  const repoMap = await readJsonSafe<{
+    summary?: { primaryLanguages?: string[]; primaryFrameworks?: string[] };
+  }>(path.join(root, "repo-map.json"));
+  if (repoMap?.summary) {
+    artifacts.languages = repoMap.summary.primaryLanguages;
+    artifacts.frameworks = repoMap.summary.primaryFrameworks;
+  }
+
+  const plan = await readJsonSafe<{
+    title?: string;
+    task?: string;
+    status?: string;
+    generatedAt?: string;
+  }>(path.join(root, "plans", "latest-plan.json"));
+  if (plan) {
+    artifacts.latestPlan = {
+      title: plan.title ?? plan.task ?? "Untitled plan",
+      status: plan.status,
+      generatedAt: plan.generatedAt
+    };
+  }
+
+  const validation = await readJsonSafe<{
+    status?: string;
+    generatedAt?: string;
+    results?: Array<{ status?: string }>;
+  }>(path.join(root, "runs", "latest-validation.json"));
+  if (validation) {
+    const results = validation.results ?? [];
+    artifacts.latestValidation = {
+      status: validation.status,
+      generatedAt: validation.generatedAt,
+      passed: results.filter((result) => result.status === "passed").length,
+      total: results.length
+    };
+  }
+
+  const review = await readJsonSafe<{
+    summary?: string;
+    generatedAt?: string;
+    findings?: unknown[];
+  }>(path.join(root, "reviews", "latest-review.json"));
+  if (review) {
+    artifacts.latestReview = {
+      summary: review.summary,
+      generatedAt: review.generatedAt,
+      findingCount: review.findings?.length
+    };
+  }
+
+  artifacts.agentCount = await countAgentFiles(
+    path.join(workspaceRoot, ".github", "agents")
+  );
+
+  const workspace = await readJsonSafe<{ repos?: unknown[] }>(
+    path.join(root, "workspace.json")
+  );
+  if (workspace?.repos) {
+    artifacts.repoCount = workspace.repos.length;
+  }
+
+  return artifacts;
+}
+
+async function readJsonSafe<T>(filePath: string): Promise<T | undefined> {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+async function countAgentFiles(directory: string): Promise<number> {
+  try {
+    const entries = await readdir(directory);
+    return entries.filter((name) => name.endsWith(".agent.md")).length;
+  } catch {
+    return 0;
+  }
+}
+
+function formatLanguagesFrameworks(artifacts: DashboardArtifacts | undefined): string {
+  const languages = artifacts?.languages ?? [];
+  const frameworks = artifacts?.frameworks ?? [];
+  if (languages.length === 0 && frameworks.length === 0) {
+    return "Run Analyze Repo to detect languages and frameworks.";
+  }
+  const parts = [languages.join(", ") || "no languages detected"];
+  if (frameworks.length > 0) {
+    parts.push(frameworks.join(", "));
+  }
+  return parts.join(" · ");
+}
+
+function formatPlan(artifacts: DashboardArtifacts | undefined): string {
+  const plan = artifacts?.latestPlan;
+  if (!plan) {
+    return "No plan yet — run Generate Plan.";
+  }
+  const meta = [plan.status, formatDate(plan.generatedAt)].filter(Boolean).join(", ");
+  return meta ? `${plan.title} (${meta})` : plan.title;
+}
+
+function formatValidation(artifacts: DashboardArtifacts | undefined): string {
+  const validation = artifacts?.latestValidation;
+  if (!validation) {
+    return "No validation run yet — run Validate.";
+  }
+  const date = formatDate(validation.generatedAt);
+  const counts =
+    typeof validation.total === "number"
+      ? `${validation.passed ?? 0}/${validation.total} passed`
+      : "";
+  return [validation.status ?? "unknown", counts, date].filter(Boolean).join(" · ");
+}
+
+function formatReview(artifacts: DashboardArtifacts | undefined): string {
+  const review = artifacts?.latestReview;
+  if (!review) {
+    return "No review yet — run Review.";
+  }
+  const summary = review.summary ? truncate(review.summary, 100) : "Review available";
+  const findings =
+    typeof review.findingCount === "number"
+      ? ` (${review.findingCount} finding(s))`
+      : "";
+  return `${summary}${findings}`;
+}
+
+function formatAgents(artifacts: DashboardArtifacts | undefined): string {
+  const count = artifacts?.agentCount ?? 0;
+  return count > 0
+    ? `${count} agent(s) installed in .github/agents`
+    : "No agents installed — run Install Agents.";
+}
+
+function formatDate(iso: string | undefined): string {
+  return iso && iso.length >= 10 ? iso.slice(0, 10) : "";
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
 function loadVscodeApi(): VscodeApiLike {
@@ -948,6 +1220,31 @@ function getWorkspaceRoot(vscode: VscodeApiLike): string {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 }
 
+// Add the given folders to the current VS Code workspace (skipping any already
+// present) so they appear in the Explorer. Returns the number actually added.
+function addWorkspaceFolders(vscode: VscodeApiLike, dirs: string[]): number {
+  const update = vscode.workspace.updateWorkspaceFolders;
+  const toUri = vscode.Uri?.file;
+  if (!update || !toUri) {
+    return 0;
+  }
+
+  const existing = new Set(
+    (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath)
+  );
+  const folders = dirs
+    .filter((dir) => !existing.has(dir))
+    .map((dir) => ({ uri: toUri(dir), name: path.basename(dir) }));
+
+  if (folders.length === 0) {
+    return 0;
+  }
+
+  const start = vscode.workspace.workspaceFolders?.length ?? 0;
+  update.call(vscode.workspace, start, 0, ...folders);
+  return folders.length;
+}
+
 function resolveExtensionRoot(context: ExtensionContextLike): string {
   // extensionPath = .../Copilot_Assistant/packages/vscode-extension
   // monorepo root = .../Copilot_Assistant (two levels up)
@@ -956,10 +1253,6 @@ function resolveExtensionRoot(context: ExtensionContextLike): string {
     return path.resolve(extensionPath, "..", "..");
   }
   return process.cwd();
-}
-
-function getNpmExecutable(): string {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
 // On Windows, npm.cmd cannot be spawned with shell:false (EINVAL).
@@ -994,7 +1287,6 @@ function quoteCliArg(value: string): string {
 function trimForDashboard(value: string): string {
   return value.trim().slice(-2000);
 }
-
 
 export function resolveChatCommandArgs(
   command: string | undefined,
@@ -1039,7 +1331,10 @@ function getChatProgressMessage(command: string): string {
   return messages[command] ?? "Running Copilot Architect…";
 }
 
-function getChatArtifactPath(command: string, workspaceRoot: string): string | undefined {
+function getChatArtifactPath(
+  command: string,
+  workspaceRoot: string
+): string | undefined {
   const base = path.join(workspaceRoot, ".copilot-architect");
   switch (command) {
     case "plan":
@@ -1097,8 +1392,12 @@ async function buildRepoContext(workspaceRoot: string): Promise<string> {
     const map = JSON.parse(await readFile(mapPath, "utf8"));
     const repo = map.repos?.[0];
     if (repo) {
-      const langs = (repo.languages as Array<{ name: string }>)?.map((l) => l.name).join(", ");
-      const fws = (repo.frameworks as Array<{ name: string }>)?.map((f) => f.name).join(", ");
+      const langs = (repo.languages as Array<{ name: string }>)
+        ?.map((l) => l.name)
+        .join(", ");
+      const fws = (repo.frameworks as Array<{ name: string }>)
+        ?.map((f) => f.name)
+        .join(", ");
       const testCmd = (repo.commands?.test as Array<{ command: string }>)?.[0]?.command;
       const entry = (repo.entryPoints as Array<{ filePath: string }>)?.[0]?.filePath;
       if (langs) lines.push(`Languages: ${langs}`);
@@ -1106,21 +1405,39 @@ async function buildRepoContext(workspaceRoot: string): Promise<string> {
       if (entry) lines.push(`Entry point: ${entry}`);
       if (testCmd) lines.push(`Test command: ${testCmd}`);
     }
-  } catch { /* no repo-map yet */ }
+  } catch {
+    /* no repo-map yet */
+  }
 
   try {
-    const indexPath = path.join(workspaceRoot, ".copilot-architect", "index", "index.json");
+    const indexPath = path.join(
+      workspaceRoot,
+      ".copilot-architect",
+      "index",
+      "index.json"
+    );
     const idx = JSON.parse(await readFile(indexPath, "utf8"));
-    const docs = (idx.documents as Array<{
-      relativePath: string;
-      symbols: Array<{ name: string; kind: string }>;
-      extension: string;
-      fileSizeBytes: number;
-      isConfigFile: boolean;
-      isDocFile: boolean;
-    }>) ?? [];
+    const docs =
+      (idx.documents as Array<{
+        relativePath: string;
+        symbols: Array<{ name: string; kind: string }>;
+        extension: string;
+        fileSizeBytes: number;
+        isConfigFile: boolean;
+        isDocFile: boolean;
+      }>) ?? [];
 
-    const SOURCE_EXTS = new Set([".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go", ".rb", ".cs"]);
+    const SOURCE_EXTS = new Set([
+      ".py",
+      ".ts",
+      ".js",
+      ".tsx",
+      ".jsx",
+      ".java",
+      ".go",
+      ".rb",
+      ".cs"
+    ]);
     const sourceDocs = docs
       .filter(
         (d) =>
@@ -1141,7 +1458,9 @@ async function buildRepoContext(workspaceRoot: string): Promise<string> {
         lines.push(`- ${doc.relativePath}${syms ? ` [${syms}]` : ""}`);
       }
     }
-  } catch { /* no index yet */ }
+  } catch {
+    /* no index yet */
+  }
 
   return lines.join("\n");
 }
@@ -1361,14 +1680,14 @@ export function extractPlanSummary(markdown: string): string {
 
 // Lines that are internal CLI noise the user doesn't need to see
 const NOISE_PATTERNS = [
-  /^Copilot Architect:/,                 // CLI banner
-  /^\s*>\s*(copilot-architect|node)/,    // npm/node invocation lines
-  /\/(Users|home|tmp)\//,               // absolute file paths
-  /^Plan (JSON|Markdown):/,             // artifact path echoes
+  /^Copilot Architect:/, // CLI banner
+  /^\s*>\s*(copilot-architect|node)/, // npm/node invocation lines
+  /\/(Users|home|tmp)\//, // absolute file paths
+  /^Plan (JSON|Markdown):/, // artifact path echoes
   /^Latest (JSON|Markdown):/,
   /^Validation (JSON|Markdown|Logs):/,
   /^Review (JSON|Markdown):/,
-  /^Status:\s*draft/,                    // internal draft status
+  /^Status:\s*draft/ // internal draft status
 ];
 
 export function formatCliOutputAsMarkdown(stdout: string): string {
