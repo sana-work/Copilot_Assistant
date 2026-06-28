@@ -219,40 +219,67 @@ npm run cli -- mcp --path /path/to/target-repo
 
 | Agent | Purpose |
 |---|---|
-| `@FeatureArchitect` | Analyze repo, find patterns, produce implementation plan — no code edits |
-| `@FeatureImplementer` | Implement an approved plan with minimal changes |
-| `@CodeReviewer` | Review diff against approved plan and validation evidence |
-| `@TestPlanner` | Map features to test coverage strategies |
-| `@Debugger` | Classify validation failures, propose minimal fixes |
-| `@SecurityReviewer` | Review changes for security risks |
-| `@PerformanceReviewer` | Identify performance concerns |
+| `@FeatureArchitect` | Analyze repo, find existing patterns, produce a detailed implementation plan — no code edits |
+| `@FeatureImplementer` | Implement an approved plan with minimal, scoped changes and captured validation evidence |
+| `@CodeReviewer` | Review diff against approved plan; separate blocking from advisory findings |
+| `@TestPlanner` | Map features to unit, integration, and regression test coverage |
+| `@Debugger` | Classify build/test/lint failures and propose the smallest correct fix |
+| `@SecurityReviewer` | Review changes for auth, input validation, secrets handling, and access control |
+| `@PerformanceReviewer` | Identify performance regressions in loops, queries, rendering, and caching |
+| `@DocumentationWriter` | Generate or update README, JSDoc/docstrings, and API docs following the repo's existing style |
+| `@DependencyAuditor` | Audit dependencies for outdated packages, known CVEs, and licensing issues |
+| `@APIDesignReviewer` | Review REST/GraphQL API changes for naming consistency, breaking changes, and auth coverage |
 
-All agents use `gpt-4o` and reference `.copilot-architect/` artifacts for context.
+All agents use `gpt-4o`. Each installed agent file includes a **Repo Context** section auto-generated from `.copilot-architect/repo-map.json` at install time (languages, frameworks, test/build commands, entry points, architectural patterns), so agents understand your stack without needing to re-discover it.
 
 ### Example Chat Prompts
 
 **Plan a feature:**
 ```text
-@FeatureArchitect Add [feature] based on this repo.
-Use Copilot Architect repo map, index, MCP tools, and latest generated plan.
-Do not modify code yet. First create a detailed implementation plan.
+@FeatureArchitect I want to add [describe feature]. Call repo_map and find_similar_feature
+first, then produce a detailed implementation plan with impacted files and test strategy.
+Do not modify any code yet.
 ```
 
-**After approval:**
+**After plan approval:**
 ```text
 @FeatureImplementer Implement the approved plan from .copilot-architect/plans/latest-plan.md.
-Run validation commands and summarize changed files.
+Call get_latest_plan, make the minimal scoped change, add tests, then run
+get_validation_commands and capture evidence.
 ```
 
 **After implementation:**
 ```text
-@CodeReviewer Review the git diff against the approved plan and latest validation report.
+@CodeReviewer Review the implementation diff against the approved plan. Call get_latest_plan
+and get_latest_validation, then report blocking findings and advisory findings separately.
 ```
 
 **If validation failed:**
 ```text
-@Debugger Validation failed. Use .copilot-architect/runs/latest-validation.json
-and related logs to classify the failure and propose the smallest safe fix.
+@Debugger The last validation run failed. Call get_latest_validation to load the failing
+output, classify the failure, find the root cause with search_repo, and propose the
+smallest fix.
+```
+
+**Update documentation:**
+```text
+@DocumentationWriter Update the documentation for [feature]. Call repo_map and
+get_latest_plan, match the existing docs style, then update the README and add JSDoc
+comments to any new exported symbols.
+```
+
+**Audit dependencies:**
+```text
+@DependencyAuditor Audit project dependencies. Call detect_package_managers, find all
+manifests, and produce a prioritised table: package | current version | recommended
+version | reason | breaking changes.
+```
+
+**Review an API change:**
+```text
+@APIDesignReviewer Review the proposed API changes. Call search_repo to map the existing
+API surface, compare it to get_latest_plan, and report breaking changes, naming
+inconsistencies, and missing auth coverage.
 ```
 
 ---
@@ -394,7 +421,10 @@ GitHub Copilot Chat artifacts:
 │   ├── TestPlanner.agent.md
 │   ├── Debugger.agent.md
 │   ├── SecurityReviewer.agent.md
-│   └── PerformanceReviewer.agent.md
+│   ├── PerformanceReviewer.agent.md
+│   ├── DocumentationWriter.agent.md
+│   ├── DependencyAuditor.agent.md
+│   └── APIDesignReviewer.agent.md
 ├── copilot-instructions.md
 ├── prompts/
 │   ├── copilot-architect-plan.prompt.md
@@ -417,7 +447,7 @@ GitHub Copilot Chat artifacts:
 
 ```bash
 npm run build     # compile all TypeScript packages
-npm test          # run all 147 Vitest tests
+npm test          # run all 159 Vitest tests
 npm run lint      # ESLint
 npm run format    # Prettier check
 npm run format:write  # Prettier fix

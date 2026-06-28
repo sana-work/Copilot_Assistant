@@ -133,9 +133,16 @@ export interface ChatResponseStreamLike {
   progress?(value: string): void;
 }
 
+export interface ChatHistoryTurnLike {
+  /** Present on user turns. */
+  prompt?: string;
+  /** Present on assistant turns — array of response parts. */
+  response?: Array<{ value?: string }>;
+}
+
 export type ChatRequestHandlerLike = (
   request: ChatRequestLike,
-  context: unknown,
+  context: { history?: ChatHistoryTurnLike[] },
   stream: ChatResponseStreamLike,
   token: unknown
 ) => Promise<void> | void;
@@ -191,6 +198,13 @@ export interface VscodeApiLike {
       options: { enableCommandUris?: boolean; enableScripts?: boolean }
     ): WebviewPanelLike;
     createTerminal?(options: { name: string; cwd?: string }): TerminalLike;
+    /** The file the user currently has open in the editor. */
+    activeTextEditor?: {
+      document: {
+        fileName: string;
+        getText(): string;
+      };
+    };
   };
   workspace: {
     workspaceFolders?: WorkspaceFolderLike[];
@@ -214,6 +228,15 @@ export interface VscodeApiLike {
       vendor?: string;
       family?: string;
     }): Promise<LanguageModelLike[]>;
+    /**
+     * Available in VS Code 1.94+ with GitHub Copilot.
+     * Returns a float embedding vector for each input string.
+     */
+    computeEmbeddings?(
+      embeddingsModel: string,
+      input: string[],
+      token?: unknown
+    ): Promise<{ values: Array<{ values: number[] | Float32Array }> }>;
   };
   LanguageModelChatMessage?: {
     User(content: string): LanguageModelChatMessageLike;
@@ -691,7 +714,7 @@ export function activate(
   if (vscode.chat) {
     const chatHandler: ChatRequestHandlerLike = async (
       request,
-      _context,
+      context,
       stream,
       token
     ) => {
@@ -746,13 +769,80 @@ export function activate(
       // Try LM for every command
       if (vscode.lm) {
         stream.progress?.("Getting AI-powered insights…");
-        const repoCtx =
-          cliCommand === "plan" ? await buildRepoContext(workspaceRoot) : "";
+        const userPrompt = request.prompt.trim();
+        const userTerms = [...new Set(tokenize(userPrompt))];
+
+        const repoResult =
+          cliCommand === "plan"
+            ? await buildRepoContext(workspaceRoot, userPrompt, vscode)
+            : { contextText: "", fileAnchors: [] as FileAnchor[] };
+        const repoCtx = repoResult.contextText;
+
+        // Collect full file content for plan commands so the LM can see
+        // existing implementations rather than guessing from 4 KB previews.
+        let fileContext = "";
+        if (cliCommand === "plan") {
+          // Merge plan files (static analysis) with symbol-registry matches
+          // (from buildRepoContext). Plan files come first; registry anchors
+          // supply line numbers for surgical excerpt extraction.
+          const planFilePaths = extractFilesFromPlan(content);
+          const anchorMap = new Map(
+            repoResult.fileAnchors.map((a) => [a.relativePath, a.anchorLine])
+          );
+          const merged: FileAnchor[] = [
+            ...planFilePaths.map((p) => ({ relativePath: p, anchorLine: anchorMap.get(p) })),
+            ...repoResult.fileAnchors.filter((a) => !planFilePaths.includes(a.relativePath))
+          ];
+          if (merged.length > 0) {
+            fileContext = await readFilesForLmContext(workspaceRoot, merged, userTerms);
+          }
+          // Include the currently open file so the LM sees the exact code the
+          // developer is looking at right now.
+          const activeEditor = vscode.window.activeTextEditor;
+          if (activeEditor) {
+            const activeRelPath = path.relative(
+              workspaceRoot,
+              activeEditor.document.fileName
+            );
+            if (!merged.some((a) => a.relativePath === activeRelPath)) {
+              const activeContent = activeEditor.document.getText().slice(0, 3_000);
+              fileContext += `\n\n=== Currently open in editor: ${activeRelPath} ===\n${activeContent}`;
+            }
+          }
+        }
+
+        const historyCtx = formatChatHistory(context.history);
+
+        // For plan commands, try the agentic tool-use loop first — it lets the
+        // LM iteratively request the files it needs rather than relying on a
+        // single pre-selected context window.
+        if (cliCommand === "plan") {
+          stream.progress?.("Reasoning over your codebase…");
+          const agentSucceeded = await runAgenticPlanLoop(
+            vscode,
+            workspaceRoot,
+            userPrompt,
+            [repoCtx, historyCtx ? `\n${historyCtx}` : ""].join(""),
+            repoResult.fileAnchors,
+            stream,
+            token
+          );
+          if (agentSucceeded) {
+            const hint = getChatFollowUpHint(cliCommand);
+            if (hint) stream.markdown(hint);
+            return;
+          }
+          // Fall through to single-shot if agent loop fails or is unsupported.
+          stream.progress?.("Getting AI-powered insights…");
+        }
+
         const lmPrompt = buildCommandLmPrompt(
           cliCommand,
-          request.prompt.trim(),
+          userPrompt,
           content,
-          repoCtx
+          repoCtx,
+          fileContext,
+          historyCtx
         );
         if (lmPrompt) {
           const streamed = await streamLmResponse(vscode, lmPrompt, stream, token);
@@ -1384,20 +1474,522 @@ async function getRegisteredRepoRoots(workspaceRoot: string): Promise<string[]> 
   }
 }
 
-async function buildRepoContext(workspaceRoot: string): Promise<string> {
+function extractFilesFromPlan(markdown: string): string[] {
+  const m = /## Likely Files To Modify\n([\s\S]*?)(?=\n## |\s*$)/m.exec(markdown);
+  if (!m) return [];
+  return [...m[1].matchAll(/`([^`]+\.[a-zA-Z0-9]+)`/g)]
+    .map((match) => match[1])
+    .filter(Boolean);
+}
+
+/**
+ * Tokenize text into lowercase terms — splits on non-alphanumeric boundaries
+ * AND camelCase/acronym boundaries so "UserService" → ["user", "service"].
+ * Matches the same tokenizer used by the BM25 indexer.
+ */
+function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  for (const chunk of text.split(/[^a-zA-Z0-9]+/)) {
+    if (!chunk) continue;
+    for (const sub of chunk.split(/(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)) {
+      const lower = sub.toLowerCase();
+      if (lower.length >= 2) tokens.push(lower);
+    }
+  }
+  return tokens;
+}
+
+/** Cosine similarity between two numeric vectors. Returns 0 for zero-norm inputs. */
+function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
+}
+
+/** A file with an optional 1-based anchor line (best-matching symbol location). */
+interface FileAnchor {
+  relativePath: string;
+  /** 1-based start line of the best-matching symbol. When set, excerpt is
+   *  extracted around this line rather than from the file beginning. */
+  anchorLine?: number;
+}
+
+/**
+ * Extract a targeted excerpt from `content`.
+ * When `anchorLine` is given (1-based), extract lines around that declaration.
+ * Otherwise grep for `terms` and return matching lines with context windows.
+ * Falls back to the file beginning when nothing matches.
+ */
+function extractRelevantSnippets(
+  content: string,
+  terms: string[],
+  maxChars: number,
+  anchorLine?: number
+): string {
+  const lines = content.split("\n");
+
+  // Anchor-line mode: centre the excerpt on the symbol declaration.
+  if (anchorLine && anchorLine > 0) {
+    const idx = anchorLine - 1; // convert to 0-based
+    const start = Math.max(0, idx - 8);
+    const end = Math.min(lines.length - 1, idx + 70);
+    return lines.slice(start, end + 1).join("\n").slice(0, maxChars);
+  }
+
+  if (terms.length === 0) return content.slice(0, maxChars);
+
+  const WINDOW = 12;
+  const included = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const lower = lines[i].toLowerCase();
+    if (terms.some((t) => lower.includes(t))) {
+      for (let j = Math.max(0, i - WINDOW); j <= Math.min(lines.length - 1, i + WINDOW); j++) {
+        included.add(j);
+      }
+    }
+  }
+
+  if (included.size === 0) return content.slice(0, maxChars);
+
+  const sorted = [...included].sort((a, b) => a - b);
+  const parts: string[] = [];
+  let prevIdx = -2;
+  let chars = 0;
+  for (const idx of sorted) {
+    if (chars >= maxChars) break;
+    if (idx > prevIdx + 1) parts.push("…");
+    const line = lines[idx];
+    parts.push(line);
+    chars += line.length + 1;
+    prevIdx = idx;
+  }
+  return parts.join("\n").slice(0, maxChars);
+}
+
+/** Return relative paths that the given source file imports (relative imports only). */
+function parseRelativeImports(content: string, ext: string): string[] {
+  const raw: string[] = [];
+  if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) {
+    for (const m of content.matchAll(/\bimport\b[^'"]*?['"](\.[^'"]+)['"]/g)) raw.push(m[1]);
+    for (const m of content.matchAll(/\brequire\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g)) raw.push(m[1]);
+  } else if (ext === ".py") {
+    for (const m of content.matchAll(/^from\s+(\.+[^\s]*)\s+import/gm)) raw.push(m[1]);
+  }
+  return [...new Set(raw)];
+}
+
+/** Expand a relative import specifier to candidate file paths (with extensions). */
+function resolveImportCandidates(fromRelDir: string, importPath: string): string[] {
+  const base = path.join(fromRelDir, importPath).replace(/\\/g, "/");
+  if (path.extname(importPath)) return [base];
+  const EXTS = [".ts", ".tsx", ".js", ".jsx", ".py"];
+  return [...EXTS.map((e) => `${base}${e}`), ...EXTS.map((e) => `${base}/index${e}`)];
+}
+
+/**
+ * Read source files from disk, extract targeted excerpts, and follow one level
+ * of relative imports. `anchors` supply optional line numbers so excerpts are
+ * centred on the relevant symbol declaration rather than the file start.
+ */
+async function readFilesForLmContext(
+  workspaceRoot: string,
+  anchors: FileAnchor[],
+  requestTerms: string[] = []
+): Promise<string> {
+  const parts: string[] = [];
+  let totalChars = 0;
+  const visited = new Set<string>();
+
+  async function readOne(anchor: FileAnchor, depth: number): Promise<void> {
+    const { relativePath: relPath, anchorLine } = anchor;
+    if (visited.has(relPath) || totalChars >= 16_000) return;
+    visited.add(relPath);
+
+    let content: string;
+    try {
+      content = await readFile(path.join(workspaceRoot, relPath), "utf8");
+    } catch {
+      return;
+    }
+
+    const perFileCap = depth === 0 ? 4_000 : 2_000;
+    const excerpt = extractRelevantSnippets(content, requestTerms, perFileCap, anchorLine);
+    const lineHint = anchorLine ? `:${anchorLine}` : "";
+    parts.push(`\n=== ${relPath}${lineHint} ===\n${excerpt}`);
+    totalChars += excerpt.length;
+
+    // Follow direct imports one level deep.
+    if (depth === 0) {
+      const ext = path.extname(relPath).toLowerCase();
+      const imports = parseRelativeImports(content, ext);
+      const fromDir = path.dirname(relPath);
+      for (const imp of imports.slice(0, 8)) {
+        if (totalChars >= 16_000) break;
+        for (const candidate of resolveImportCandidates(fromDir, imp)) {
+          if (!visited.has(candidate)) {
+            await readOne({ relativePath: candidate }, 1);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  for (const anchor of anchors.slice(0, 6)) {
+    if (totalChars >= 16_000) break;
+    await readOne(anchor, 0);
+  }
+
+  return parts.join("\n");
+}
+
+/** Summarise the last few chat turns into a compact string for the LM prompt. */
+function formatChatHistory(history: ChatHistoryTurnLike[] | undefined): string {
+  if (!history?.length) return "";
+  const turns = history.slice(-6);
+  const lines: string[] = ["Previous conversation:"];
+  for (const turn of turns) {
+    if (turn.prompt) {
+      lines.push(`User: ${turn.prompt.slice(0, 400)}`);
+    } else if (turn.response) {
+      const text = turn.response
+        .map((p) => p.value ?? "")
+        .join("")
+        .slice(0, 600);
+      if (text) lines.push(`Assistant: ${text}`);
+    }
+  }
+  return lines.length > 1 ? lines.join("\n") : "";
+}
+
+interface RepoContextResult {
+  contextText: string;
+  /** Top-ranked files with symbol anchor lines for targeted excerpt extraction. */
+  fileAnchors: FileAnchor[];
+}
+
+// ─── Claude-inspired retrieval mechanisms ────────────────────────────────────
+
+/**
+ * HyDE — Hypothetical Document Embedding.
+ *
+ * Instead of embedding the user's natural-language question (which lives far
+ * from code in embedding space), we ask the LM to write a short hypothetical
+ * code snippet that *would* implement what the user is asking for, then search
+ * for the real code that looks most like that snippet.
+ *
+ * "how is access controlled?" → LM generates a plausible middleware/guard
+ * snippet → we tokenize THAT and score against the index → recall for
+ * AuthMiddleware / checkPermission / RoleGuard dramatically improves.
+ *
+ * Returns an empty string on any failure so callers can fall back gracefully.
+ */
+async function generateHypotheticalSnippet(
+  vscodeApi: VscodeApiLike,
+  userQuery: string,
+  token: unknown
+): Promise<string> {
+  if (!vscodeApi.lm) return "";
+  try {
+    let models: LanguageModelLike[] = [];
+    for (const selector of [{ vendor: "copilot", family: "gpt-4o" }, { vendor: "copilot" }, {}]) {
+      models = await vscodeApi.lm.selectChatModels(selector);
+      if (models.length) break;
+    }
+    if (!models.length) return "";
+
+    const hydePrompt =
+      `You are a code search assistant. The developer asked: "${userQuery}"\n` +
+      "Write a SHORT (10-20 line) hypothetical code snippet — a function, class, or middleware — " +
+      "that would implement what they are looking for. Use realistic variable and function names. " +
+      "Output ONLY the code, no explanation, no markdown fences.";
+
+    const msg = vscodeApi.LanguageModelChatMessage?.User(hydePrompt);
+    if (!msg) return "";
+    const response = await models[0].sendRequest([msg], {}, token);
+    const parts: string[] = [];
+    for await (const chunk of response.text) parts.push(chunk);
+    return parts.join("").slice(0, 800);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Multi-query expansion.
+ *
+ * A single query misses synonyms and paraphrases: "add user" doesn't match
+ * createAccount, registerMember, or POST /signup. We ask the LM to produce
+ * four reformulations then merge all results with Reciprocal Rank Fusion (RRF)
+ * so every variant contributes — whichever query finds the right file first
+ * "wins" the ranking.
+ *
+ * Returns the original query list on any failure.
+ */
+async function expandQuery(
+  vscodeApi: VscodeApiLike,
+  userQuery: string,
+  token: unknown
+): Promise<string[]> {
+  if (!vscodeApi.lm) return [userQuery];
+  try {
+    let models: LanguageModelLike[] = [];
+    for (const selector of [{ vendor: "copilot", family: "gpt-4o" }, { vendor: "copilot" }, {}]) {
+      models = await vscodeApi.lm.selectChatModels(selector);
+      if (models.length) break;
+    }
+    if (!models.length) return [userQuery];
+
+    const expandPrompt =
+      `Rephrase this code search query in 4 different ways that a developer might express the same intent. ` +
+      `Use technical synonyms, alternate function/class names, and API terms. ` +
+      `Output ONLY the 4 queries, one per line, no numbering, no extra text.\n\nQuery: ${userQuery}`;
+
+    const msg = vscodeApi.LanguageModelChatMessage?.User(expandPrompt);
+    if (!msg) return [userQuery];
+    const response = await models[0].sendRequest([msg], {}, token);
+    const parts: string[] = [];
+    for await (const chunk of response.text) parts.push(chunk);
+    const expanded = parts
+      .join("")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 3)
+      .slice(0, 4);
+    return [userQuery, ...expanded];
+  } catch {
+    return [userQuery];
+  }
+}
+
+/**
+ * Score a set of documents against multiple query variants and merge with
+ * Reciprocal Rank Fusion (RRF, k=60). Each variant produces its own ranked
+ * list; a document that ranks highly in *any* variant gets a strong combined
+ * score — so synonyms and paraphrases all contribute.
+ */
+function multiQueryRrfScore(
+  docs: Array<{ relativePath: string; symbols: Array<{ name: string; startLine?: number }> ; textPreview?: string }>,
+  queryVariants: string[]
+): Map<string, number> {
+  const K = 60;
+  const totals = new Map<string, number>();
+
+  for (const variant of queryVariants) {
+    const terms = [...new Set(tokenize(variant))];
+    const ranked = docs
+      .map((d) => {
+        const pathTokens = new Set(tokenize(d.relativePath));
+        const symTokenSet = new Set(d.symbols.flatMap((s) => tokenize(s.name)));
+        const preview = (d.textPreview ?? "").toLowerCase();
+        let score = 0;
+        for (const t of terms) {
+          if (pathTokens.has(t)) score += 3;
+          if (symTokenSet.has(t)) score += 5;
+          if (preview.includes(t)) score += 1;
+        }
+        return { path: d.relativePath, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    for (let rank = 0; rank < ranked.length; rank++) {
+      const rrf = 1 / (K + rank + 1);
+      totals.set(ranked[rank].path, (totals.get(ranked[rank].path) ?? 0) + rrf);
+    }
+  }
+
+  return totals;
+}
+
+/**
+ * Agentic tool-use loop.
+ *
+ * Instead of a single prompt → single answer, this sends the LM a set of
+ * "tools" it can call (readFile, searchSymbol, followImport) and runs a
+ * max-step loop. The LM requests the files it needs; we fetch them and send
+ * the results back as tool responses — exactly how Claude Code works.
+ *
+ * Only runs when the VS Code LM API supports tool use (VS Code 1.94+).
+ * Falls back to the standard single-shot path on any error.
+ */
+async function runAgenticPlanLoop(
+  vscodeApi: VscodeApiLike,
+  workspaceRoot: string,
+  userPrompt: string,
+  initialContext: string,
+  fileAnchors: FileAnchor[],
+  stream: ChatResponseStreamLike,
+  token: unknown
+): Promise<boolean> {
+  if (!vscodeApi.lm) return false;
+
+  const TOOL_READ_FILE = "readFile";
+  const TOOL_SEARCH = "searchSymbol";
+  const MAX_STEPS = 4;
+
+  // System context for the agent
+  const systemCtx = [
+    "You are Copilot Architect, an AI assistant with deep knowledge of the developer's codebase.",
+    "You have tools to read files and search for symbols. Use them to find the existing implementation",
+    "before suggesting any new code. When you have enough context, answer the developer's question.",
+    initialContext
+  ].join("\n");
+
+  const tools = [
+    {
+      name: TOOL_READ_FILE,
+      description: "Read a source file from the repository. Use the exact relative path.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path, e.g. src/auth/AuthService.ts" },
+          startLine: { type: "number", description: "Optional 1-based line to start reading from" }
+        },
+        required: ["path"]
+      }
+    },
+    {
+      name: TOOL_SEARCH,
+      description: "Search for a symbol or concept in the codebase index.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Symbol name or short phrase to search for" }
+        },
+        required: ["query"]
+      }
+    }
+  ];
+
+  let models: LanguageModelLike[] = [];
+  try {
+    for (const selector of [{ vendor: "copilot", family: "gpt-4o" }, { vendor: "copilot" }, {}]) {
+      models = await vscodeApi.lm.selectChatModels(selector);
+      if (models.length) break;
+    }
+    if (!models.length) return false;
+  } catch {
+    return false;
+  }
+
+  // Check if the model supports tool use by inspecting its interface
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const model = models[0] as any;
+  if (typeof model.sendRequest !== "function") return false;
+
+  // Build initial file context from anchors
+  let accumulatedContext = "";
+  for (const anchor of fileAnchors.slice(0, 4)) {
+    try {
+      const content = await readFile(path.join(workspaceRoot, anchor.relativePath), "utf8");
+      const excerpt = extractRelevantSnippets(content, tokenize(userPrompt), 3_000, anchor.anchorLine);
+      accumulatedContext += `\n=== ${anchor.relativePath} ===\n${excerpt}`;
+    } catch { /* file unavailable */ }
+  }
+
+  const messages: LanguageModelChatMessageLike[] = [
+    ...(vscodeApi.LanguageModelChatMessage
+      ? [vscodeApi.LanguageModelChatMessage.User(
+          `${systemCtx}\n\nExisting code context:\n${accumulatedContext}\n\nDeveloper's question: ${userPrompt}`
+        )]
+      : [{ role: 1, content: `${systemCtx}\n\n${userPrompt}` }])
+  ];
+
+  try {
+    for (let step = 0; step < MAX_STEPS; step++) {
+      const response = await model.sendRequest(messages, { tools }, token);
+
+      // Collect streamed text and tool calls
+      const textParts: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const toolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
+
+      for await (const chunk of response.text) {
+        // VS Code LM streams text chunks; tool calls arrive as structured parts
+        if (typeof chunk === "string") {
+          textParts.push(chunk);
+        } else if (chunk && typeof chunk === "object") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const c = chunk as any;
+          if (c.type === "tool_use" || c.name) {
+            toolCalls.push({ name: c.name ?? c.type, input: c.input ?? c.parameters ?? {} });
+          }
+        }
+      }
+
+      const assistantText = textParts.join("");
+
+      // No tool calls → final answer, stream it out
+      if (toolCalls.length === 0) {
+        if (assistantText) {
+          stream.markdown(assistantText);
+          return true;
+        }
+        return false;
+      }
+
+      // Execute tool calls and append results
+      const toolResults: string[] = [];
+      for (const call of toolCalls.slice(0, 3)) {
+        if (call.name === TOOL_READ_FILE) {
+          const relPath = String(call.input.path ?? "");
+          const startLine = Number(call.input.startLine ?? 0) || undefined;
+          try {
+            const fc = await readFile(path.join(workspaceRoot, relPath), "utf8");
+            const snippet = extractRelevantSnippets(fc, tokenize(userPrompt), 3_000, startLine);
+            toolResults.push(`readFile("${relPath}"):\n${snippet}`);
+          } catch {
+            toolResults.push(`readFile("${relPath}"): file not found`);
+          }
+        } else if (call.name === TOOL_SEARCH) {
+          const q = String(call.input.query ?? "");
+          const terms = tokenize(q);
+          // Quick in-memory search over what we already loaded
+          const hits = fileAnchors
+            .filter((a) => terms.some((t) => tokenize(a.relativePath).includes(t)))
+            .slice(0, 3)
+            .map((a) => a.relativePath);
+          toolResults.push(`searchSymbol("${q}"): ${hits.length ? hits.join(", ") : "no results"}`);
+        }
+      }
+
+      // Push the assistant's reasoning + tool results back as context
+      if (assistantText && vscodeApi.LanguageModelChatMessage) {
+        messages.push(vscodeApi.LanguageModelChatMessage.Assistant(assistantText));
+      }
+      if (toolResults.length && vscodeApi.LanguageModelChatMessage) {
+        messages.push(vscodeApi.LanguageModelChatMessage.User(
+          `Tool results:\n${toolResults.join("\n---\n")}\n\nContinue answering.`
+        ));
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
+async function buildRepoContext(
+  workspaceRoot: string,
+  request?: string,
+  vscodeApi?: VscodeApiLike
+): Promise<RepoContextResult> {
   const lines: string[] = [];
+  let fileAnchors: FileAnchor[] = [];
 
   try {
     const mapPath = path.join(workspaceRoot, ".copilot-architect", "repo-map.json");
     const map = JSON.parse(await readFile(mapPath, "utf8"));
     const repo = map.repos?.[0];
     if (repo) {
-      const langs = (repo.languages as Array<{ name: string }>)
-        ?.map((l) => l.name)
-        .join(", ");
-      const fws = (repo.frameworks as Array<{ name: string }>)
-        ?.map((f) => f.name)
-        .join(", ");
+      const langs = (repo.languages as Array<{ name: string }>)?.map((l) => l.name).join(", ");
+      const fws = (repo.frameworks as Array<{ name: string }>)?.map((f) => f.name).join(", ");
       const testCmd = (repo.commands?.test as Array<{ command: string }>)?.[0]?.command;
       const entry = (repo.entryPoints as Array<{ filePath: string }>)?.[0]?.filePath;
       if (langs) lines.push(`Languages: ${langs}`);
@@ -1410,87 +2002,213 @@ async function buildRepoContext(workspaceRoot: string): Promise<string> {
   }
 
   try {
-    const indexPath = path.join(
-      workspaceRoot,
-      ".copilot-architect",
-      "index",
-      "index.json"
-    );
+    const indexPath = path.join(workspaceRoot, ".copilot-architect", "index", "index.json");
     const idx = JSON.parse(await readFile(indexPath, "utf8"));
-    const docs =
-      (idx.documents as Array<{
-        relativePath: string;
-        symbols: Array<{ name: string; kind: string }>;
-        extension: string;
-        fileSizeBytes: number;
-        isConfigFile: boolean;
-        isDocFile: boolean;
-      }>) ?? [];
 
-    const SOURCE_EXTS = new Set([
-      ".py",
-      ".ts",
-      ".js",
-      ".tsx",
-      ".jsx",
-      ".java",
-      ".go",
-      ".rb",
-      ".cs"
+    type IndexSymbol = { name: string; kind: string; startLine?: number; endLine?: number };
+    type IndexDoc = {
+      relativePath: string;
+      symbols: IndexSymbol[];
+      textPreview?: string;
+      extension: string;
+      fileSizeBytes: number;
+      isConfigFile: boolean;
+      isDocFile: boolean;
+    };
+    const docs = (idx.documents as IndexDoc[]) ?? [];
+
+    const SOURCE_EXTS = new Set([".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go", ".rb", ".cs"]);
+    let sourceDocs = docs.filter(
+      (d) => !d.isConfigFile && !d.isDocFile && d.fileSizeBytes > 0 && SOURCE_EXTS.has(d.extension)
+    );
+
+    // --- Symbol registry: token → {file, anchorLine} ----------------------------
+    // Built from every symbol in the index. Gives us "go-to-definition" resolution
+    // without a language server: when a query term matches a symbol name token, we
+    // know exactly which file and line to read.
+    const symbolRegistry = new Map<string, { relativePath: string; anchorLine?: number }[]>();
+    for (const doc of docs) {
+      for (const sym of doc.symbols) {
+        for (const tok of tokenize(sym.name)) {
+          const entries = symbolRegistry.get(tok) ?? [];
+          entries.push({ relativePath: doc.relativePath, anchorLine: sym.startLine });
+          symbolRegistry.set(tok, entries);
+        }
+      }
+    }
+
+    // --- Multi-query + HyDE scoring ----------------------------------------------
+    // queryVariants: [original] + LM-generated paraphrases (async, best-effort)
+    // hydeSnippet: hypothetical code snippet matching the query (HyDE mechanism)
+    // Both run in parallel; failures fall back to the single original query.
+    const [queryVariants, hydeSnippet] = await Promise.all([
+      request && vscodeApi ? expandQuery(vscodeApi, request, undefined) : Promise.resolve(request ? [request] : []),
+      request && vscodeApi ? generateHypotheticalSnippet(vscodeApi, request, undefined) : Promise.resolve("")
     ]);
-    const sourceDocs = docs
-      .filter(
-        (d) =>
-          !d.isConfigFile &&
-          !d.isDocFile &&
-          d.fileSizeBytes > 0 &&
-          SOURCE_EXTS.has(d.extension)
-      )
-      .slice(0, 25);
 
-    if (sourceDocs.length) {
+    // RRF over all query variants gives every synonym/paraphrase a voice.
+    const rrfScores = queryVariants.length > 0
+      ? multiQueryRrfScore(sourceDocs, queryVariants)
+      : new Map<string, number>();
+
+    // Extra terms from the HyDE snippet boost matching files.
+    const hydeTerms = hydeSnippet ? [...new Set(tokenize(hydeSnippet))] : [];
+
+    const requestTerms = request ? [...new Set(tokenize(request))] : [];
+    const allQueryTerms = [...new Set([...requestTerms, ...hydeTerms])];
+
+    type Scored = { doc: IndexDoc; score: number; anchorLine?: number };
+    let scored: Scored[] = sourceDocs.map((d) => {
+      const pathTokens = new Set(tokenize(d.relativePath));
+      const symTokens = new Map<string, number | undefined>(); // token → startLine
+      for (const s of d.symbols) {
+        for (const tok of tokenize(s.name)) {
+          if (!symTokens.has(tok)) symTokens.set(tok, s.startLine);
+        }
+      }
+      const previewLower = (d.textPreview ?? "").toLowerCase();
+
+      let score = (rrfScores.get(d.relativePath) ?? 0) * 20; // RRF contribution (scaled)
+      let bestAnchorLine: number | undefined;
+      for (const term of allQueryTerms) {
+        // Path match (worth 3 points — strong structural signal)
+        if (pathTokens.has(term)) score += 3;
+        // Symbol name match (worth 5 points — most precise signal)
+        if (symTokens.has(term)) {
+          score += 5;
+          bestAnchorLine ??= symTokens.get(term);
+        }
+        // Preview body match (worth 1 point — content signal)
+        if (previewLower.includes(term)) score += 1;
+      }
+      return { doc: d, score, anchorLine: bestAnchorLine };
+    });
+
+    // --- LM embedding reranking (VS Code 1.94+, GitHub Copilot) ------------------
+    // Try to rerank the top-30 keyword candidates by cosine similarity.
+    // Falls back silently to keyword scoring when embeddings are unavailable.
+    if (vscodeApi?.lm?.computeEmbeddings && request && requestTerms.length > 0) {
+      const EMBEDDING_MODELS = [
+        "github:text-embedding-3-small",
+        "github:text-embedding-ada-002",
+        "text-embedding-3-small",
+        "text-embedding-ada-002"
+      ];
+      const candidates = scored
+        .filter((s) => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 30);
+
+      if (candidates.length > 1) {
+        for (const model of EMBEDDING_MODELS) {
+          try {
+            const docTexts = candidates.map(
+              (c) =>
+                `${c.doc.relativePath} ${c.doc.symbols.map((s) => s.name).join(" ")} ${c.doc.textPreview?.slice(0, 300) ?? ""}`
+            );
+            const result = await vscodeApi.lm.computeEmbeddings(model, [request, ...docTexts]);
+            const queryEmb = result.values[0].values;
+            for (let i = 0; i < candidates.length; i++) {
+              const sim = cosineSimilarity(queryEmb, result.values[i + 1].values);
+              // Blend: 70% embedding similarity, 30% keyword score (normalised to [0,1])
+              const maxKw = Math.max(...candidates.map((c) => c.score), 1);
+              candidates[i].score = 0.7 * sim + 0.3 * (candidates[i].score / maxKw);
+            }
+            // Re-sort the candidates slice; leave the zero-score tail unchanged.
+            candidates.sort((a, b) => b.score - a.score);
+            // Splice reranked candidates back into `scored`.
+            const rerankedPaths = new Set(candidates.map((c) => c.doc.relativePath));
+            scored = [
+              ...candidates,
+              ...scored.filter((s) => !rerankedPaths.has(s.doc.relativePath))
+            ];
+            break; // Success — stop trying other model names.
+          } catch {
+            /* model not available, try next */
+          }
+        }
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score || b.doc.fileSizeBytes - a.doc.fileSizeBytes);
+
+    // Top anchor files for disk reading.
+    fileAnchors = scored
+      .filter((s) => s.score > 0)
+      .slice(0, 8)
+      .map((s) => ({ relativePath: s.doc.relativePath, anchorLine: s.anchorLine }));
+
+    // File list — quick orientation table for the LM.
+    const topDocs = scored.slice(0, 25);
+    if (topDocs.length) {
       lines.push("\nSource files:");
-      for (const doc of sourceDocs) {
+      for (const { doc, anchorLine } of topDocs) {
         const syms = doc.symbols
-          ?.slice(0, 5)
+          ?.slice(0, 6)
           .map((s) => s.name)
           .join(", ");
-        lines.push(`- ${doc.relativePath}${syms ? ` [${syms}]` : ""}`);
+        const hint = anchorLine ? `:${anchorLine}` : "";
+        lines.push(`- ${doc.relativePath}${hint}${syms ? ` [${syms}]` : ""}`);
+      }
+    }
+
+    // Index previews as a lightweight fallback for non-plan commands.
+    const previewDocs = scored.slice(0, 5);
+    if (previewDocs.length) {
+      lines.push("\nExisting code (index previews):");
+      let totalChars = 0;
+      for (const { doc } of previewDocs) {
+        if (totalChars >= 6_000) break;
+        const preview = doc.textPreview?.slice(0, 2_000);
+        if (!preview) continue;
+        lines.push(`\n--- ${doc.relativePath} ---`);
+        lines.push(preview);
+        totalChars += preview.length;
       }
     }
   } catch {
     /* no index yet */
   }
 
-  return lines.join("\n");
+  return { contextText: lines.join("\n"), fileAnchors };
 }
 
 function buildCommandLmPrompt(
   command: string,
   userRequest: string,
   content: string,
-  repoContext: string
+  repoContext: string,
+  fileContext = "",
+  historyContext = ""
 ): string | undefined {
   const body = content.trim().slice(0, 8000);
   const repoSection = repoContext ? `\nRepository context:\n${repoContext}\n` : "";
+  const fileSection = fileContext
+    ? `\nFull file content (read directly from disk — includes imported modules):\n${fileContext}\n`
+    : "";
+  const historySection = historyContext ? `\n${historyContext}\n` : "";
 
   switch (command) {
     case "plan": {
       const summary = extractPlanSummary(content);
       return [
-        "You are Copilot Architect, a coding assistant with access to the developer's repository analysis.",
-        "Answer specifically about THIS codebase using the actual file names, function names, and patterns provided.",
-        "Be concise and practical. Show a short code snippet when it helps. No generic advice.",
+        "You are Copilot Architect, a coding assistant with deep knowledge of the developer's existing codebase.",
+        "IMPORTANT: Before suggesting any new code, look carefully at the existing code provided below to see if the feature is already implemented.",
+        "If it already exists: explain exactly how it works, point to the relevant functions and files, and do NOT suggest rewriting it.",
+        "If it is partially implemented: describe what is in place and what is missing.",
+        "If it is absent: provide a concise implementation guide that follows the existing patterns in the codebase.",
+        "Answer specifically about THIS codebase using the actual file names, function names, and patterns you can see. No generic advice.",
+        historySection,
         repoSection,
+        fileSection,
         `Static analysis:\n${summary}`,
         "",
         `Developer's request: "${userRequest}"`,
         "",
-        "Provide a specific implementation guide:",
-        "1. Which exact file(s) to modify and what to change",
-        "2. New dependencies to install (if any)",
-        "3. A short code snippet showing the key change",
-        "4. One command to verify it works"
+        "Step 1 — check the existing code above: does this feature already exist?",
+        "Step 2 — if yes: describe the existing implementation with file:line references.",
+        "Step 3 — if no or incomplete: which exact file(s) to modify, what to add, and a short code snippet following the repo patterns.",
+        "Step 4 — one command to verify the behavior."
       ].join("\n");
     }
 
@@ -1518,7 +2236,7 @@ function buildCommandLmPrompt(
         "If everything passed: confirm briefly and note any warnings.",
         "If something failed: identify the failure and give specific fix steps with the relevant error lines.",
         "Be direct — no fluff.",
-        "",
+        historySection,
         `Validation results:\n${body}`
       ].join("\n");
 
@@ -1527,15 +2245,17 @@ function buildCommandLmPrompt(
         "You are Copilot Architect. The developer just ran a code review on their latest git diff.",
         "Summarize the most important findings: bugs, security issues, missing tests, code quality.",
         "Give 3-5 specific, actionable recommendations referencing actual file names and lines where available.",
-        "",
+        historySection,
         `Review report:\n${body}`
       ].join("\n");
 
     case "search":
       return [
         "You are Copilot Architect. The developer searched their repo index.",
-        "Explain what was found and how it relates to their query. Group related results. Use bullet points.",
-        "",
+        "For each result: state the file path, what it does, and the specific existing code or pattern most relevant to the query.",
+        "If the query describes something that already exists in the results, say so clearly and describe the existing implementation.",
+        "Group related results. Use bullet points. Reference actual function names you can see.",
+        historySection,
         `Search query: "${userRequest}"`,
         "",
         `Search results:\n${body}`

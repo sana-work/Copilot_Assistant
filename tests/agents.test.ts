@@ -17,7 +17,10 @@ describe("AgentService", () => {
       "TestPlanner",
       "Debugger",
       "SecurityReviewer",
-      "PerformanceReviewer"
+      "PerformanceReviewer",
+      "DocumentationWriter",
+      "DependencyAuditor",
+      "APIDesignReviewer"
     ]);
   });
 
@@ -33,7 +36,7 @@ describe("AgentService", () => {
     );
     const featureArchitect = await readFile(featureArchitectPath, "utf8");
 
-    expect(install.results).toHaveLength(7);
+    expect(install.results).toHaveLength(10);
     expect(install.results.every((result) => result.status === "installed")).toBe(true);
     expect(validation.ok).toBe(true);
     expect(featureArchitect).toContain("---\nname: FeatureArchitect");

@@ -1444,6 +1444,15 @@ function getSearchText(response: SearchResponse): string {
       `${result.relativePath} (${result.languageGuess}, score ${result.score})`,
       `Matched: ${result.matchedFields.join(", ")}`
     );
+    if (result.anchor) {
+      lines.push(`Anchor: ${result.anchor.symbol} (${result.anchor.kind}) line ${result.anchor.line ?? "?"}`);
+    }
+    if (result.textPreview) {
+      // Include a code snippet so callers (e.g. the LM) can see what's in the file.
+      lines.push("---");
+      lines.push(result.textPreview.slice(0, 800).trimEnd());
+      lines.push("---");
+    }
   }
 
   return lines.join("\n");
