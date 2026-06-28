@@ -229,6 +229,7 @@ npm run cli -- mcp --path /path/to/target-repo
 | `@DocumentationWriter` | Generate or update README, JSDoc/docstrings, and API docs following the repo's existing style |
 | `@DependencyAuditor` | Audit dependencies for outdated packages, known CVEs, and licensing issues |
 | `@APIDesignReviewer` | Review REST/GraphQL API changes for naming consistency, breaking changes, and auth coverage |
+| `@CodeAnalysisAgent` | Scan the full codebase, map execution flows and module connections, identify issues, and produce an end-to-end system understanding report |
 
 All agents use `gpt-4o`. Each installed agent file includes a **Repo Context** section auto-generated from `.copilot-architect/repo-map.json` at install time (languages, frameworks, test/build commands, entry points, architectural patterns), so agents understand your stack without needing to re-discover it.
 
@@ -273,6 +274,14 @@ comments to any new exported symbols.
 @DependencyAuditor Audit project dependencies. Call detect_package_managers, find all
 manifests, and produce a prioritised table: package | current version | recommended
 version | reason | breaking changes.
+```
+
+**Full codebase analysis:**
+```text
+@CodeAnalysisAgent Scan this codebase and produce a full system understanding report.
+Call repo_map first, trace execution flows from entry points, map module dependencies,
+identify data flows, and flag issues. Include a quick-reference index of the 20 most
+important files.
 ```
 
 **Review an API change:**
@@ -424,7 +433,8 @@ GitHub Copilot Chat artifacts:
 │   ├── PerformanceReviewer.agent.md
 │   ├── DocumentationWriter.agent.md
 │   ├── DependencyAuditor.agent.md
-│   └── APIDesignReviewer.agent.md
+│   ├── APIDesignReviewer.agent.md
+│   └── CodeAnalysisAgent.agent.md
 ├── copilot-instructions.md
 ├── prompts/
 │   ├── copilot-architect-plan.prompt.md
@@ -447,7 +457,7 @@ GitHub Copilot Chat artifacts:
 
 ```bash
 npm run build     # compile all TypeScript packages
-npm test          # run all 159 Vitest tests
+npm test          # run all 159 Vitest tests (11 agents)
 npm run lint      # ESLint
 npm run format    # Prettier check
 npm run format:write  # Prettier fix

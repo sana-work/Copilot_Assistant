@@ -494,6 +494,53 @@ const agentDefinitions: AgentDefinition[] = [
       "Do not approve unauthenticated endpoints when existing patterns require authentication.",
       "Do not ignore versioning implications for externally consumed APIs."
     ]
+  },
+  {
+    id: "code-analysis-agent",
+    fileName: "CodeAnalysisAgent.agent.md",
+    name: "CodeAnalysisAgent",
+    description:
+      "Scan the full codebase, explain files and functions, map how everything is connected, outline execution flows, identify issues, and produce a clear end-to-end system understanding report.",
+    model: "gpt-4o",
+    tools: [
+      "copilotArchitect/*",
+      "search/codebase",
+      "repo_map",
+      "workspace_map",
+      "detect_languages",
+      "detect_frameworks",
+      "detect_build_commands",
+      "detect_test_commands",
+      "search_repo",
+      "search_across_repos",
+      "find_impacted_files",
+      "analyze_impact",
+      "get_validation_commands"
+    ],
+    purpose:
+      "Produce a comprehensive, end-to-end system understanding report: what every major file and function does, how modules are connected, how data and execution flow through the system, and what issues or gaps exist.",
+    instructions: [
+      "Step 1 — Call `repo_map` to get the full picture: languages, frameworks, entry points, architectural patterns, build and test commands.",
+      "Step 2 — Call `detect_languages` and `detect_frameworks` to confirm the technology stack and identify all layers (frontend, backend, data, infra).",
+      "Step 3 — Call `search_repo` with entry-point keywords (e.g. 'main', 'app', 'server', 'index', 'bootstrap', 'start') to locate the top-level execution starting points.",
+      "Step 4 — Trace execution flow from each entry point: identify the request/event handlers, business logic modules, data access layers, and external integrations they call. Use `search_repo` to read each layer.",
+      "Step 5 — Call `search_repo` with 'import', 'require', 'from' to map module dependencies and identify the most heavily imported shared utilities or services.",
+      "Step 6 — Call `find_impacted_files` on the core domain concepts (infer from repo_map) to discover which files are central to the system.",
+      "Step 7 — Call `search_repo` with error-related keywords ('throw', 'catch', 'error', 'exception', 'logger', 'log.error') to identify error handling patterns and gaps.",
+      "Step 8 — Call `get_validation_commands` to understand how the system is tested and what quality gates exist.",
+      "Step 9 — Produce the System Understanding Report with these sections: (1) Stack Overview, (2) Entry Points & Execution Flow, (3) Module Map — what each major file/folder does, (4) Data Flow — how data moves from input to storage to output, (5) Key Integrations — external APIs, databases, queues, (6) Issues & Gaps — missing error handling, untested paths, circular dependencies, dead code, (7) Quick-reference index of the 20 most important files with one-line descriptions."
+    ],
+    handoffGuidance: [
+      "The report must be readable by a developer who has never seen this codebase before — use plain language, not just file paths.",
+      "Every section must cite actual file paths and function names found in the repo.",
+      "The issues section must distinguish: Critical (broken/unsafe), Moderate (missing test coverage, unclear ownership), Low (style, dead code).",
+      "After delivering the report, suggest which agent to invoke next based on the most severe issues found (e.g. @SecurityReviewer for auth gaps, @TestPlanner for coverage gaps, @DocumentationWriter for missing docs)."
+    ],
+    safetyRules: [
+      "Do not modify any code — analysis and reporting only.",
+      "Do not run build or test commands during analysis — read artifacts and index only.",
+      "Do not expose secrets, tokens, or credentials found in configuration files in the report."
+    ]
   }
 ];
 
@@ -974,7 +1021,9 @@ function chatPromptExamples(definition: AgentDefinition): string[] {
     DependencyAuditor:
       "@DependencyAuditor Audit project dependencies. Call detect_package_managers, find all manifests, and produce a prioritised table: package | current version | recommended version | reason | breaking changes.",
     APIDesignReviewer:
-      "@APIDesignReviewer Review the proposed API changes. Call search_repo to map the existing API surface, compare it to get_latest_plan, and report breaking changes, naming inconsistencies, and missing auth coverage."
+      "@APIDesignReviewer Review the proposed API changes. Call search_repo to map the existing API surface, compare it to get_latest_plan, and report breaking changes, naming inconsistencies, and missing auth coverage.",
+    CodeAnalysisAgent:
+      "@CodeAnalysisAgent Scan this codebase and produce a full system understanding report. Call repo_map first, trace execution flows from entry points, map module dependencies, identify data flows, and flag issues. Include a quick-reference index of the 20 most important files."
   };
 
   const example = examples[definition.name];
