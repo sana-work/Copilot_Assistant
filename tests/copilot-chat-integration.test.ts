@@ -86,12 +86,12 @@ describe("Copilot Chat integration", () => {
 
     expect(readme).toContain("Connect Copilot Chat To Copilot Architect MCP");
     expect(readme).toContain("MCP: List Servers");
-    expect(readme).toContain("@FeatureArchitect Add [feature] based on this repo.");
+    expect(readme).toContain("@FeatureArchitect I want to add [describe feature].");
     expect(readme).toContain(
       "@FeatureImplementer Implement the approved plan from .copilot-architect/plans/latest-plan.md."
     );
     expect(readme).toContain(
-      "@CodeReviewer Review the git diff against the approved plan and latest validation report."
+      "@CodeReviewer Review the implementation diff against the approved plan."
     );
     expect(readme).toContain("does not modify Copilot internals");
   });

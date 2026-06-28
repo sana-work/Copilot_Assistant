@@ -743,6 +743,40 @@ export function activate(
         runArgs = [...args, "--path", workspaceRoot];
       }
 
+      // Question/analysis prompts: skip the CLI entirely and answer conversationally.
+      // The plan CLI pipeline is designed for feature implementation — running it for
+      // questions produces "Files to modify" / risk-score output that is wrong for Q&A.
+      if (cliCommand === "question") {
+        stream.progress?.("Searching your codebase…");
+        const userPrompt = request.prompt.trim();
+        const userTerms = [...new Set(tokenize(userPrompt))];
+        const repoResult = await buildRepoContext(workspaceRoot, userPrompt, vscode);
+        let fileCtx = await readFilesForLmContext(workspaceRoot, repoResult.fileAnchors, userTerms);
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor) {
+          const activeRelPath = path.relative(workspaceRoot, activeEditor.document.fileName);
+          if (!repoResult.fileAnchors.some((a) => a.relativePath === activeRelPath)) {
+            fileCtx += `\n\n=== Currently open in editor: ${activeRelPath} ===\n${activeEditor.document.getText().slice(0, 3_000)}`;
+          }
+        }
+        const historyCtx = formatChatHistory(context.history);
+        if (vscode.lm) {
+          stream.progress?.("Generating answer…");
+          const lmPrompt = buildCommandLmPrompt(
+            "question",
+            userPrompt,
+            "",
+            repoResult.contextText,
+            fileCtx,
+            historyCtx
+          );
+          if (lmPrompt) {
+            await streamLmResponse(vscode, lmPrompt, stream, token);
+          }
+        }
+        return;
+      }
+
       stream.progress?.(getChatProgressMessage(cliCommand));
 
       const result = await runner.run({ args: runArgs, cwd: extensionRoot });
@@ -1402,12 +1436,61 @@ export function resolveChatCommandArgs(
     case "instructions":
       return ["instructions", "generate"];
     default:
-      return prompt ? ["plan", prompt] : undefined;
+      if (!prompt) return undefined;
+      // Free-form messages: route to the appropriate handler based on intent.
+      // Questions and analysis requests get a conversational Q&A path (no CLI plan artifact).
+      // Feature implementation requests go through the plan pipeline.
+      return classifyIntent(prompt) === "question"
+        ? ["question", prompt]
+        : ["plan", prompt];
   }
+}
+
+/**
+ * Classify a free-form prompt as a question/analysis request or a feature
+ * implementation request. Questions get a conversational Q&A response;
+ * implementation requests run the full planning pipeline.
+ */
+export function classifyIntent(prompt: string): "question" | "plan" {
+  const lower = prompt.toLowerCase().trim();
+
+  // Documentation requests — "create a doc", "write a readme", "document X"
+  if (
+    /\b(doc|docs|documentation|readme|wiki)\b/.test(lower) &&
+    /\b(create|write|generate|explain|add)\b/.test(lower)
+  ) {
+    return "question";
+  }
+
+  // Explicit question starters
+  if (
+    /^(what|how|why|where|which|who|when|show|list|explain|describe|analyze|analyse|tell|give|can you explain|is there|are there|does|do )\b/.test(
+      lower
+    )
+  ) {
+    return "question";
+  }
+
+  // Strong analysis/explanation verbs anywhere in the prompt
+  if (
+    /\b(explain|describe|analyze|analyse|understand|overview|summarize|summarise|walk me through|show me how)\b/.test(
+      lower
+    )
+  ) {
+    return "question";
+  }
+
+  // "how X works / is implemented / is structured"
+  if (/\bhow\b.*(work|implement|structur|organiz|architect)/i.test(lower)) {
+    return "question";
+  }
+
+  return "plan";
 }
 
 function getChatProgressMessage(command: string): string {
   const messages: Record<string, string> = {
+    question: "Searching your codebase…",
     analyze: "Analyzing repository…",
     index: "Building file index…",
     plan: "Generating feature plan…",
@@ -2189,6 +2272,22 @@ function buildCommandLmPrompt(
   const historySection = historyContext ? `\n${historyContext}\n` : "";
 
   switch (command) {
+    case "question":
+      return [
+        "You are Copilot Architect, an expert on the developer's specific codebase.",
+        "Answer the developer's question directly and concretely, using the actual code shown below.",
+        "Rules:",
+        "- Quote exact file paths, function names, class names, and patterns you can see.",
+        "- If the question asks about something that already exists in the repo, describe how it works — do NOT suggest rewriting it.",
+        "- If the question asks for documentation, write the documentation from the actual code.",
+        "- Never give generic advice. Every statement must reference something visible in the code below.",
+        "- If the answer is not in the provided code, say so clearly rather than guessing.",
+        historySection,
+        repoSection,
+        fileSection,
+        `Developer's question: "${userRequest}"`
+      ].join("\n");
+
     case "plan": {
       const summary = extractPlanSummary(content);
       return [
@@ -2476,9 +2575,14 @@ export function getChatHelpText(): string {
     "",
     "**Example:** `@architect /plan add user authentication`",
     "",
-    "You can also skip the slash command — any plain prompt is treated as a plan request:",
+    "You can also skip the slash command:",
     "",
-    "`@architect add a payment webhook handler`"
+    "- Questions and analysis requests get a direct answer from your codebase:",
+    "  `@architect explain how authentication works`",
+    "  `@architect analyze the repo and create a doc explaining it`",
+    "",
+    "- Feature requests run the full planning pipeline:",
+    "  `@architect add a payment webhook handler`"
   ].join("\n");
 }
 
