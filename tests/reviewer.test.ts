@@ -74,6 +74,35 @@ describe("ReviewService", () => {
     expect(markdown).toContain("Unexpected files:");
   });
 
+  it("includes untracked new files so a new-file feature is not 'no diff to review'", async () => {
+    if (!(await gitAvailable())) {
+      return;
+    }
+
+    const repoRoot = await createRepo({
+      "package.json": JSON.stringify({ name: "review-untracked" }),
+      "src/existing.ts": "export const existing = true;\n"
+    });
+    await initializeGitRepo(repoRoot);
+    await writeApprovedPlan(repoRoot, ["src/feature/newFeature.ts"]);
+    // Brand-new file that has never been added to git — invisible to `git diff`.
+    await mkdir(path.join(repoRoot, "src/feature"), { recursive: true });
+    await writeFile(
+      path.join(repoRoot, "src/feature/newFeature.ts"),
+      "export const newFeature = () => 'auth token';\n",
+      "utf8"
+    );
+
+    const result = await new ReviewService().review({
+      startPath: repoRoot,
+      plan: "latest"
+    });
+
+    expect(result.report.changedFiles).toContain("src/feature/newFeature.ts");
+    expect(result.report.diffSummary).not.toContain("No git diff changes detected.");
+    expect(result.report.summary).toContain("1 changed file");
+  });
+
   it("loads validation failures into the review report and prompt", async () => {
     if (!(await gitAvailable())) {
       return;

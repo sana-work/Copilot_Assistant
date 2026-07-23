@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -172,31 +172,50 @@ export class ReviewService {
 
 async function getChangedFiles(repoRoot: string): Promise<string[]> {
   const headDiff = await getGitOutput(repoRoot, ["diff", "--name-only", "HEAD", "--"]);
+  const untracked = await getUntrackedFiles(repoRoot);
 
-  if (headDiff !== undefined) {
-    return uniqueLines(headDiff);
-  }
+  const raw =
+    headDiff !== undefined
+      ? uniqueLines([headDiff, untracked.join("\n")].join("\n"))
+      : await (async () => {
+          const [unstagedDiff, stagedDiff] = await Promise.all([
+            getGitOutput(repoRoot, ["diff", "--name-only", "--"]),
+            getGitOutput(repoRoot, ["diff", "--cached", "--name-only", "--"])
+          ]);
+          return uniqueLines(
+            [unstagedDiff ?? "", stagedDiff ?? "", untracked.join("\n")].join("\n")
+          );
+        })();
 
-  const [unstagedDiff, stagedDiff] = await Promise.all([
-    getGitOutput(repoRoot, ["diff", "--name-only", "--"]),
-    getGitOutput(repoRoot, ["diff", "--cached", "--name-only", "--"])
-  ]);
+  // Drop Copilot Architect's own generated artifacts — reviewing plan/validation
+  // JSON as if it were source code is pure noise.
+  return raw.filter((filePath) => !isArtifactPath(filePath));
+}
 
-  return uniqueLines([unstagedDiff ?? "", stagedDiff ?? ""].join("\n"));
+function isArtifactPath(filePath: string): boolean {
+  return /(^|\/)\.copilot-architect\//.test(filePath);
 }
 
 async function getDiffSummary(repoRoot: string): Promise<string> {
   const headSummary = await getGitOutput(repoRoot, ["diff", "--stat", "HEAD", "--"]);
+  const untracked = await getUntrackedFiles(repoRoot);
+  const untrackedSummary =
+    untracked.length > 0
+      ? `${untracked.length} new (untracked) file(s):\n${untracked
+          .map((file) => ` ${file}`)
+          .join("\n")}`
+      : "";
 
   if (headSummary !== undefined) {
-    return headSummary.trim() || "No git diff changes detected.";
+    const combined = [headSummary.trim(), untrackedSummary].filter(Boolean).join("\n");
+    return combined || "No git diff changes detected.";
   }
 
   const [unstagedSummary, stagedSummary] = await Promise.all([
     getGitOutput(repoRoot, ["diff", "--stat", "--"]),
     getGitOutput(repoRoot, ["diff", "--cached", "--stat", "--"])
   ]);
-  const summary = [unstagedSummary, stagedSummary]
+  const summary = [unstagedSummary, stagedSummary, untrackedSummary]
     .filter((value): value is string => Boolean(value?.trim()))
     .join("\n")
     .trim();
@@ -206,9 +225,10 @@ async function getDiffSummary(repoRoot: string): Promise<string> {
 
 async function getDiffText(repoRoot: string): Promise<string> {
   const headDiff = await getGitOutput(repoRoot, ["diff", "--unified=0", "HEAD", "--"]);
+  const untrackedDiff = await getUntrackedDiffText(repoRoot);
 
   if (headDiff !== undefined) {
-    return headDiff;
+    return [headDiff, untrackedDiff].filter(Boolean).join("\n");
   }
 
   const [unstagedDiff, stagedDiff] = await Promise.all([
@@ -216,7 +236,55 @@ async function getDiffText(repoRoot: string): Promise<string> {
     getGitOutput(repoRoot, ["diff", "--cached", "--unified=0", "--"])
   ]);
 
-  return [unstagedDiff ?? "", stagedDiff ?? ""].join("\n");
+  return [unstagedDiff ?? "", stagedDiff ?? "", untrackedDiff]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * List untracked (newly created, unstaged) files. `git diff` never reports
+ * these, so a feature implemented entirely as new files would otherwise produce
+ * an empty review — the "No git diff changes detected" symptom. Listing them
+ * explicitly lets new files be reviewed like any other change.
+ */
+async function getUntrackedFiles(repoRoot: string): Promise<string[]> {
+  const output = await getGitOutput(repoRoot, [
+    "ls-files",
+    "--others",
+    "--exclude-standard"
+  ]);
+
+  return output
+    ? output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((filePath) => !isArtifactPath(filePath))
+    : [];
+}
+
+/**
+ * Synthesize an added-lines diff for untracked files so the security and
+ * breaking-change heuristics (which scan `+` lines) also cover brand-new files.
+ */
+async function getUntrackedDiffText(repoRoot: string): Promise<string> {
+  const files = await getUntrackedFiles(repoRoot);
+  const parts: string[] = [];
+
+  for (const file of files.slice(0, 50)) {
+    try {
+      const content = await readFile(path.join(repoRoot, file), "utf8");
+      const added = content
+        .split(/\r?\n/)
+        .map((line) => `+${line}`)
+        .join("\n");
+      parts.push(`diff --git a/${file} b/${file}\n+++ b/${file}\n${added}`);
+    } catch {
+      // Binary or unreadable file — skip.
+    }
+  }
+
+  return parts.join("\n");
 }
 
 async function getGitOutput(

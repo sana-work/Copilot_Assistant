@@ -149,19 +149,24 @@ const agentDefinitions: AgentDefinition[] = [
       "Step 3 — Call `find_similar_feature` to check whether the feature is already partly or fully implemented.",
       "Step 4 — Call `analyze_impact` to get a ranked list of likely impacted files before writing the plan.",
       "Step 5 — If this is a multi-repo workspace, call `analyze_cross_repo_impact` to identify cross-repo dependencies.",
-      "Step 6 — Call `generate_plan_context` to assemble the full repo + search context, then call `generate_feature_plan` with approved=true.",
-      "Step 7 — Present the plan with: overview, likely files with line anchors, risks, test strategy, and validation commands.",
-      "Step 8 — Stop and wait for explicit human approval before handing off to FeatureImplementer."
+      "Step 6 — Call `generate_plan_context` to assemble the full repo + search context, then DRAFT the plan in chat only (overview, likely files with line anchors, risks, test strategy, validation commands). Do not save it yet.",
+      "Step 7 — Feedback loop: ask the human to confirm or refine the draft. Incorporate their feedback and re-present the draft until they explicitly approve. Do not skip this step even when invoked from a handoff.",
+      "Step 8 — MANDATORY SAVE: only after approval, call `generate_feature_plan` with approved=true. This writes `.copilot-architect/plans/latest-plan.md` and `latest-plan.json`. A plan that is only described in chat but never written to disk does not exist for the next agent — you MUST call this tool.",
+      "Step 9 — Confirm the save by calling `get_latest_plan`. If it reports the plan is missing, call `generate_feature_plan` (approved=true) again before doing anything else.",
+      "Step 10 — Only after the saved plan is confirmed, hand off to FeatureImplementer."
     ],
     handoffGuidance: [
       "The plan must be specific enough that FeatureImplementer can act without guessing: exact file paths, function names, and code snippets.",
       "Point to `.copilot-architect/plans/latest-plan.md` and `.copilot-architect/plans/latest-plan.json`.",
-      "If a similar feature already exists, describe it fully before proposing any new code."
+      "If a similar feature already exists, describe it fully before proposing any new code.",
+      "When control is passed from CodeAnalysisAgent, use its report as input but still run the full flow ending in `generate_feature_plan` (approved=true) — the analysis report is NOT a persisted plan.",
+      "Never hand off to FeatureImplementer until `get_latest_plan` confirms the plan is on disk."
     ],
     safetyRules: [
       "Do not edit any application code — planning only.",
       "Do not run mutating commands.",
-      "Do not expose secrets found in repository files or logs."
+      "Do not expose secrets found in repository files or logs.",
+      "Never end your turn with only a chat description of the plan: you MUST have called `generate_feature_plan` with approved=true and confirmed `latest-plan.md` exists via `get_latest_plan`."
     ]
   },
   {
@@ -194,16 +199,19 @@ const agentDefinitions: AgentDefinition[] = [
     purpose:
       "Implement only an approved plan with minimal, scoped changes, tests, and captured validation evidence.",
     instructions: [
-      "Step 1 — Call `get_latest_plan` and read the full plan before touching any file.",
-      "Step 2 — Call `search_repo` on the exact files listed in the plan to read their current content.",
-      "Step 3 — Make the smallest coherent change that satisfies the plan; do not refactor unrelated code.",
-      "Step 4 — Add or update tests near the changed behavior — follow existing test file naming conventions.",
-      "Step 5 — Call `get_validation_commands` to find the correct build and test commands for this repo.",
-      "Step 6 — Run the validation commands and capture their output as implementation evidence.",
-      "Step 7 — Report: changed files, tests added or updated, commands run, and any deviations from the plan."
+      "Step 1 — Call `get_latest_plan` and read the full plan before touching any file. If it reports the plan is missing, STOP and ask the human to run FeatureArchitect first — do not improvise a plan.",
+      "Step 2 — Call `search_repo` on the exact files listed in the plan and read their current content so you have an accurate BEFORE snapshot.",
+      "Step 3 — For each file, present the change as a clear BEFORE → AFTER diff (fenced code block showing the exact current code and the exact replacement) so the human can see precisely what will change.",
+      "Step 4 — Feedback loop: pause after presenting the diffs and let the human confirm or adjust before you write anything. Incorporate their feedback into the AFTER code. (issue 5 — feedback before final code is generated.)",
+      "Step 5 — Apply the approved changes with the `edit` tool so they are actually written to the files in the open VS Code workspace — do not just print code in chat. Make the smallest coherent change that satisfies the plan; do not refactor unrelated code.",
+      "Step 6 — Add or update tests near the changed behavior — follow existing test file naming conventions.",
+      "Step 7 — Call `get_validation_commands` to find the correct build and test commands for this repo.",
+      "Step 8 — Run the validation commands and capture their output as implementation evidence.",
+      "Step 9 — Report: each changed file with its before/after summary, tests added or updated, commands run, and any deviations from the plan, then hand off to CodeReviewer."
     ],
     handoffGuidance: [
       "Use `.copilot-architect/handoffs/latest-handoff.md` as the implementation contract — do not deviate from it.",
+      "Every code change must be shown as a before/after diff AND written to disk with the `edit` tool — a change described only in chat is not implemented.",
       "Always report deviations explicitly, even minor ones."
     ],
     safetyRules: [
@@ -236,21 +244,29 @@ const agentDefinitions: AgentDefinition[] = [
         prompt:
           "Validation failed. Use .copilot-architect/runs/latest-validation.json and related logs to classify the failure and propose the smallest safe fix.",
         send: false
+      },
+      {
+        label: "Plan Tests",
+        agent: "TestPlanner",
+        prompt:
+          "Review passed with no blocking findings and validation is green. Plan the test coverage for the implemented change from .copilot-architect/plans/latest-plan.md.",
+        send: false
       }
     ],
     purpose:
-      "Review the implementation diff against the approved plan. Flag unexpected scope, missing tests, validation failures, security risks, and performance regressions.",
+      "Review the implementation diff against the approved plan. Flag unexpected scope, missing tests, validation failures, security risks, and performance regressions. This is the final gate: route to Debugger only on failure, otherwise to TestPlanner.",
     instructions: [
       "Step 1 — Call `get_latest_plan` and `get_latest_validation` to load the baseline.",
-      "Step 2 — Read the git diff (from the handoff or via `search/codebase`) and compare it line-by-line to the plan.",
-      "Step 3 — Flag: unexpected scope changes, missing or deleted tests, failing validation commands, security regressions, performance regressions.",
+      "Step 2 — Read the review artifact `.copilot-architect/reviews/latest-review.json` (generated by `/review`) for the changed-file list and diff summary; new/untracked files are included there. Only fall back to `search/codebase` if that artifact is absent — do not conclude 'no diff to review' just because `git diff` was empty.",
+      "Step 3 — Compare the changed files line-by-line to the plan. Flag: unexpected scope changes, missing or deleted tests, failing validation commands, security regressions, performance regressions.",
       "Step 4 — For each finding include: file path, line number if available, severity (blocking / advisory), and specific remediation.",
       "Step 5 — Separate blocking findings (must fix before merge) from advisory findings (follow-up tickets).",
-      "Step 6 — If validation failed, hand off to Debugger with the exact failing command and output."
+      "Step 6 — Route the flow: if validation failed OR there are blocking findings, hand off to Debugger with the exact failing command and output. Otherwise the review passes — hand off to TestPlanner to plan coverage."
     ],
     handoffGuidance: [
       "Generate or update `.copilot-architect/reviews/latest-review.md` with structured findings.",
-      "Separate blocking from advisory findings — the handoff must make this distinction explicit."
+      "Separate blocking from advisory findings — the handoff must make this distinction explicit.",
+      "This agent is the end of the implementation flow: Debugger on failure, TestPlanner on success — never hand back to FeatureImplementer without a blocking finding."
     ],
     safetyRules: [
       "Do not rewrite the implementation during review — findings only.",
@@ -517,6 +533,15 @@ const agentDefinitions: AgentDefinition[] = [
       "analyze_impact",
       "get_validation_commands"
     ],
+    handoffs: [
+      {
+        label: "Plan a Feature",
+        agent: "FeatureArchitect",
+        prompt:
+          "Use this analysis as context and produce a detailed implementation plan. You MUST persist it by calling generate_feature_plan with approved=true — do not stop at a chat description.",
+        send: false
+      }
+    ],
     purpose:
       "Produce a comprehensive, end-to-end system understanding report: what every major file and function does, how modules are connected, how data and execution flow through the system, and what issues or gaps exist.",
     instructions: [
@@ -534,7 +559,8 @@ const agentDefinitions: AgentDefinition[] = [
       "The report must be readable by a developer who has never seen this codebase before — use plain language, not just file paths.",
       "Every section must cite actual file paths and function names found in the repo.",
       "The issues section must distinguish: Critical (broken/unsafe), Moderate (missing test coverage, unclear ownership), Low (style, dead code).",
-      "After delivering the report, suggest which agent to invoke next based on the most severe issues found (e.g. @SecurityReviewer for auth gaps, @TestPlanner for coverage gaps, @DocumentationWriter for missing docs)."
+      "After delivering the report, suggest which agent to invoke next based on the most severe issues found (e.g. @SecurityReviewer for auth gaps, @TestPlanner for coverage gaps, @DocumentationWriter for missing docs).",
+      "When the human wants to build something from this analysis, hand off to FeatureArchitect and remind it that the plan must be persisted with generate_feature_plan (approved=true), not just described."
     ],
     safetyRules: [
       "Do not modify any code — analysis and reporting only.",
@@ -973,6 +999,20 @@ function validateAgentText(filePath: string, text: string): AgentValidationFileR
     !text.includes("agent: Debugger")
   ) {
     errors.push("CodeReviewer must hand off to Debugger for validation failures.");
+  }
+
+  if (
+    path.basename(filePath) === "CodeReviewer.agent.md" &&
+    !text.includes("agent: TestPlanner")
+  ) {
+    errors.push("CodeReviewer must hand off to TestPlanner when review passes.");
+  }
+
+  if (
+    path.basename(filePath) === "CodeAnalysisAgent.agent.md" &&
+    !text.includes("agent: FeatureArchitect")
+  ) {
+    errors.push("CodeAnalysisAgent must hand off to FeatureArchitect to plan a feature.");
   }
 
   if (!text.includes("## Trust Metadata")) {
