@@ -44,6 +44,102 @@ Declining a finding records a reason and closes it. Accepting a blocking finding
 
 ---
 
+## Solutions
+
+This section summarises, per problem statement, what must **change** in existing code and what must be **added**. Sections 1–4 below carry the full design for each.
+
+### P1 — Feature Architect: multiple conversation turns must revise the plan
+
+**Root cause.** The only save path regenerates the whole plan from a single `request` string, so each save discards everything the human said in earlier turns.
+
+**Fix in one line.** Make revision a first-class concept and give the agent an edit-in-place tool, so saving no longer means rebuilding.
+
+| Needs to change | File | Change |
+| --- | --- | --- |
+| `FeaturePlanArtifact` | `packages/planner/src/models.ts:39` | Add `revision`, `supersedes`, `revisions[]` |
+| `generate_feature_plan` | `packages/mcp-server/src/tools.ts:243` | Becomes revision-1-only; errors with a pointer to `revise_feature_plan` when a draft exists, unless `restart=true` |
+| `createPlan` artifact paths | `packages/planner/src/feature-planning-service.ts:838` | Write to `drafts/<planId>/rev-<n>.*` instead of overwriting `latest-plan.*` |
+| FeatureArchitect `tools` | `packages/agents/src/index.ts:117` | Add `revise_feature_plan`, `approve_plan` |
+| FeatureArchitect steps 7–8 | `packages/agents/src/index.ts:153` | Step 7 calls `revise_feature_plan` per feedback round; step 8 calls `approve_plan`. State explicitly that re-calling `generate_feature_plan` discards prior turns |
+
+| Needs to be added | Where |
+| --- | --- |
+| `PlanRevisionEntry` interface | `packages/planner/src/models.ts` |
+| `FeaturePlanningService.revisePlan()` | `packages/planner/src/feature-planning-service.ts` |
+| `revise_feature_plan` MCP tool (`readOnly: false`) | `packages/mcp-server/src/tools.ts` |
+| `drafts/<planId>/` artifact directory | `.copilot-architect/plans/` |
+
+**Why the `generate_feature_plan` guard matters.** Without it the model keeps reaching for the tool it already knows, and feedback keeps getting lost. The guard — not the new tool — is what actually fixes P1.
+
+### P2 — Approve Plan must save the latest plan
+
+**Root cause.** Approval is a transient call argument, not state. `PlanStatus` already has an `"approved"` member but nothing writes it, and the handoff gate never consults the plan.
+
+**Fix in one line.** Split *save* from *approve*, record approval against a specific revision, and make the plan's own state the authority for the handoff gate.
+
+| Needs to change | File | Change |
+| --- | --- | --- |
+| `FeaturePlanArtifact` | `packages/planner/src/models.ts:39` | Add `approval?: PlanApproval` |
+| Plan status write | `packages/planner/src/feature-planning-service.ts:208` | Stays `"draft"` on generate/revise; only `approve_plan` sets `"approved"` |
+| Handoff gate | `packages/planner/src/handoff-service.ts:53` | Add a real check: reject unless `plan.status === "approved"` and `plan.approval` exists. `--approve` stays as operator intent; plan state becomes authority |
+| `get_latest_plan` | `packages/mcp-server/src/tools.ts:277` | Return `status`, `revision`, `approval` so downstream agents can refuse a draft |
+| FeatureImplementer step 1 | `packages/agents/src/index.ts:202` | Stop on *unapproved*, not just on *missing* |
+
+| Needs to be added | Where |
+| --- | --- |
+| `PlanApproval` interface | `packages/planner/src/models.ts` |
+| `approve_plan` MCP tool (`readOnly: false`) | `packages/mcp-server/src/tools.ts` |
+| `plan approve` / `plan revisions` / `plan show` CLI subcommands | `packages/cli/src/index.ts:588` |
+| `approved/<planId>-rev<n>-plan.json` frozen copies | `.copilot-architect/plans/` |
+
+**Key constraint.** `approve_plan` takes `revision` as a **required** argument. Approving "whatever is newest" reintroduces the exact ambiguity this section removes.
+
+### P3 — Code Reviewer output: revise plan, decline review comments
+
+**Root cause.** Findings have no identity and no state, so they are rebuilt from scratch on every run — a declined comment reappears on the next review. CodeReviewer also has no route back to the plan.
+
+**Fix in one line.** Give findings stable IDs and a durable disposition record, and add a review → plan-revision path that re-enters the approval gate.
+
+| Needs to change | File | Change |
+| --- | --- | --- |
+| `ReviewFinding` | `packages/shared/src/models.ts:354` | Add `id`, `status`, `disposition?` |
+| `buildFindings` | `packages/reviewer/src/index.ts:560` | Compute the stable `id` for each finding |
+| `ReviewService.review` | `packages/reviewer/src/index.ts:66` | Load `dispositions.json` and merge by id after `buildFindings` |
+| `reviewerPrompt` builder | `packages/reviewer/src/index.ts:87` | Exclude declined findings so the agent stops re-raising them |
+| Review markdown renderer | `packages/reviewer/src/index.ts:506` | Render a separate **Declined (with reason)** section; declined findings no longer count as blocking |
+| CodeReviewer `tools` | `packages/agents/src/index.ts:230` | Add `resolve_review_finding`, `revise_feature_plan` |
+| CodeReviewer `handoffs` | `packages/agents/src/index.ts:240` | Add a third handoff, `"Revise Plan" → FeatureArchitect` |
+| CodeReviewer instructions | `packages/agents/src/index.ts:258` | Add a triage step: per finding, accept (fold into plan) or decline (with reason) |
+| `validateAgentText` | `packages/agents/src/index.ts:958` | Assert `CodeReviewer.agent.md` contains `agent: FeatureArchitect` |
+
+| Needs to be added | Where |
+| --- | --- |
+| `FindingDisposition` interface | `packages/shared/src/models.ts` |
+| `resolve_review_finding` MCP tool (`readOnly: false`) | `packages/mcp-server/src/tools.ts` |
+| `reviews/dispositions.json` durable record | `.copilot-architect/` |
+
+**Design note.** `dispositions.json` is the durable record; individual review reports stay disposable snapshots. Decline requires a non-empty `reason` — that field is the audit trail, and an unreasoned decline should be rejected at the tool boundary rather than defaulted.
+
+### P4 — `/Create unit test cases`
+
+**Root cause.** No test prompt exists, and the agent that would serve it cannot write files.
+
+**Fix in one line.** Add the missing prompt definition and close TestPlanner's tooling gap so the command produces tests rather than a plan for tests.
+
+| Needs to change | File | Change |
+| --- | --- | --- |
+| `promptDefinitions` | `packages/instructions/src/index.ts:220` | Add a fifth entry, `copilot-architect-test` |
+| TestPlanner `tools` | `packages/agents/src/index.ts:283` | Add `edit` (option A), or end the prompt in a FeatureImplementer handoff (option B) |
+| TestPlanner `safetyRules` | `packages/agents/src/index.ts:306` | Under option A, restrict writes to test files only |
+
+| Needs to be added | Where |
+| --- | --- |
+| `copilot-architect-test.prompt.md` (generated) | `.github/prompts/` |
+
+**Recommendation.** Option A. `/Create unit test cases` reads as a single-step command that yields test files; option B turns it into a two-agent flow.
+
+---
+
 ## 1. Plan Revisions (Feature Architect, multi-turn)
 
 ### Problem
